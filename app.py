@@ -3,127 +3,130 @@ import pandas as pd
 from optimizer import ValuationOptimizer
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="Saudi Stock Valuator AI", page_icon="📊", layout="centered")
+st.set_page_config(page_title="Saudi Stock Valuator AI", page_icon="⚖️", layout="wide")
 
 st.markdown("""
     <style>
-    .big-metric { font-size: 32px; font-weight: bold; color: #0e1117; }
-    .undervalued { color: #009933; font-weight: bold; }
-    .overvalued { color: #cc0000; font-weight: bold; }
-    .card { background-color: #f9f9f9; padding: 20px; border-radius: 10px; margin-bottom: 15px; border: 1px solid #ddd; }
+    .big-metric { font-size: 26px; font-weight: bold; color: #0e1117; }
+    .header-style { font-size: 18px; color: #555; font-weight: 600; margin-bottom: 10px; }
+    .card { background-color: #f9f9f9; padding: 20px; border-radius: 10px; border: 1px solid #ddd; height: 100%; }
+    .highlight-ai { border-left: 5px solid #ff4b4b; }
+    .highlight-acc { border-left: 5px solid #1f77b4; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🇸🇦 Saudi Stock Valuation AI")
+st.title("⚖️ Saudi Stock Valuation: AI vs. Intuition")
 
 with st.sidebar:
     st.header("Settings")
     stock_input = st.text_input("Stock Code", value="1120")
-    run_btn = st.button("🚀 Run Analysis", type="primary")
+    run_btn = st.button("🚀 Run Dual Analysis", type="primary")
 
 if run_btn and stock_input:
     optimizer = ValuationOptimizer()
     
-    with st.spinner(f"🔍 Analyzing {stock_input}..."):
+    with st.spinner(f"🔍 Running dual optimization for {stock_input}..."):
         result = optimizer.find_optimal_strategy(stock_input)
         
         if "error" in result:
             st.error(result['error'])
         else:
-            # --- 1. Calculate Current Values ---
+            # --- 1. Calculate Current Values (Shared) ---
             full_data = result['full_data_cache']
-            latest_price = full_data['prices']['Close'].iloc[-1] # Real-time(ish) price
+            latest_price = full_data['prices']['Close'].iloc[-1]
             
             from valuation_engine import ValuationEngine
             engine = ValuationEngine(full_data['financials'])
             
             # Run models on TODAY's data
-            dcf_curr = engine.dcf_valuation(growth_rate=0.04)
-            mults_curr = engine.multiples_valuation(pe_ratio=18.0, pb_ratio=2.5, ev_ebitda_ratio=12.0)
-            
             curr_vals = {
-                "DCF (Moderate)": dcf_curr,
-                "P/E Multiple": mults_curr['PE_Valuation'],
-                "P/B Multiple": mults_curr['PB_Valuation'],
-                "EV/EBITDA": mults_curr['EBITDA_Valuation']
+                "DCF (Moderate)": engine.dcf_valuation(growth_rate=0.04),
+                "P/E Multiple": engine.multiples_valuation(pe_ratio=18.0)['PE_Valuation'],
+                "P/B Multiple": engine.multiples_valuation(pb_ratio=2.5)['PB_Valuation'],
+                "EV/EBITDA": engine.multiples_valuation(ev_ebitda_ratio=12.0)['EBITDA_Valuation']
             }
 
-            # --- 2. Calculate Weighted Fair Value ---
-            fair_value = 0
-            table_rows = []
+            # --- 2. Calculate Both Strategies ---
             
-            for method, metrics in result['optimized_weights'].items():
-                val_now = curr_vals.get(method, 0)
-                weight = metrics['weight']
-                accuracy = metrics['historical_accuracy']
-                
-                fair_value += (val_now * weight)
-                
-                table_rows.append({
-                    "Method": method,
-                    "Current Value (SAR)": f"{val_now:.2f}",
-                    "Historical Accuracy": f"{accuracy:.1%}",
-                    "AI Weight": f"{weight:.1%}"
-                })
+            def calculate_result(strategy_dict):
+                val = 0
+                rows = []
+                for method, metrics in strategy_dict.items():
+                    current = curr_vals.get(method, 0)
+                    w = metrics['weight']
+                    val += (current * w)
+                    rows.append({
+                        "Method": method, 
+                        "Accuracy": f"{metrics['historical_accuracy']:.1%}",
+                        "Weight": f"{w:.1%}",
+                        "Value": f"{current:.2f}"
+                    })
+                return val, rows
 
-            # --- 3. Determine Verdict (Over/Under) ---
-            diff = fair_value - latest_price
-            diff_pct = (diff / latest_price) * 100
+            ai_val, ai_rows = calculate_result(result['strategies']['solver'])
+            acc_val, acc_rows = calculate_result(result['strategies']['accuracy'])
             
-            verdict_color = "undervalued" if diff > 0 else "overvalued"
-            verdict_text = "UNDERVALUED" if diff > 0 else "OVERVALUED"
-            arrow = "🔼" if diff > 0 else "🔽"
+            # Verdicts
+            ai_diff = ((ai_val - latest_price) / latest_price) * 100
+            acc_diff = ((acc_val - latest_price) / latest_price) * 100
 
             # --- DISPLAY SECTION ---
             
-            # A. Main Scorecards
-            col1, col2 = st.columns(2)
+            # A. Top Level Comparison
+            col1, col2, col3 = st.columns([1, 1, 1])
+            
             with col1:
                 st.markdown(f"""
                 <div class="card">
-                    <div style="font-size:14px; color:#666;">Current Market Price</div>
+                    <div class="header-style">Market Price</div>
                     <div class="big-metric">{latest_price:.2f} SAR</div>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            with col2:
-                st.markdown(f"""
-                <div class="card">
-                    <div style="font-size:14px; color:#666;">AI Fair Value</div>
-                    <div class="big-metric">{fair_value:.2f} SAR</div>
+                    <div style="color: #666; font-size: 14px;">Real-Time Data</div>
                 </div>
                 """, unsafe_allow_html=True)
 
-            # B. The Verdict
-            st.markdown(f"""
-            <div style="text-align:center; padding: 10px; font-size: 24px; border: 2px solid #eee; border-radius: 10px;">
-                Verdict: <span class="{verdict_color}">{verdict_text} by {abs(diff_pct):.2f}%</span> {arrow}
-            </div>
-            """, unsafe_allow_html=True)
-            
+            with col2:
+                color = "green" if ai_diff > 0 else "red"
+                st.markdown(f"""
+                <div class="card highlight-ai">
+                    <div class="header-style">🤖 AI Solver Model</div>
+                    <div class="big-metric">{ai_val:.2f} SAR</div>
+                    <div style="color: {color}; font-weight:bold;">{ai_diff:+.1f}% vs Market</div>
+                    <div style="font-size: 12px; color: #555;">Focus: Minimizing Total Error</div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+            with col3:
+                color = "green" if acc_diff > 0 else "red"
+                st.markdown(f"""
+                <div class="card highlight-acc">
+                    <div class="header-style">🎯 Accuracy Model</div>
+                    <div class="big-metric">{acc_val:.2f} SAR</div>
+                    <div style="color: {color}; font-weight:bold;">{acc_diff:+.1f}% vs Market</div>
+                    <div style="font-size: 12px; color: #555;">Focus: Higher Accuracy = Higher Weight</div>
+                </div>
+                """, unsafe_allow_html=True)
+
             st.divider()
 
-            # C. Detailed Breakdown Table
-            st.subheader("📊 Methodology Breakdown")
-            st.caption(f"Weights are optimized based on backtesting against {result['backtest_date']}.")
+            # B. Detailed Breakdown Tabs
+            tab1, tab2 = st.tabs(["🤖 AI Solver Details", "🎯 Accuracy Model Details"])
             
-            df_table = pd.DataFrame(table_rows)
-            st.dataframe(df_table, hide_index=True, use_container_width=True)
+            with tab1:
+                st.caption("This model uses a mathematical solver to find the combination of weights that minimizes total error, even if it means giving weight to less accurate methods to balance the equation.")
+                c1, c2 = st.columns([2, 1])
+                c1.dataframe(pd.DataFrame(ai_rows), use_container_width=True, hide_index=True)
+                
+                # Chart
+                fig = go.Figure(data=[go.Pie(labels=[r['Method'] for r in ai_rows], values=[float(r['Weight'].strip('%')) for r in ai_rows], hole=.4)])
+                fig.update_layout(title="AI Weight Distribution", height=300, margin=dict(t=30, b=0, l=0, r=0))
+                c2.plotly_chart(fig, use_container_width=True)
 
-            # D. Visuals
-            col_chart1, col_chart2 = st.columns(2)
-            
-            with col_chart1:
-                # Weight Distribution
-                labels = [r['Method'] for r in table_rows]
-                values = [float(r['AI Weight'].strip('%')) for r in table_rows]
-                fig1 = go.Figure(data=[go.Pie(labels=labels, values=values, hole=.4)])
-                fig1.update_layout(title="AI Weight Allocation", height=300, margin=dict(t=30, b=0, l=0, r=0))
-                st.plotly_chart(fig1, use_container_width=True)
-
-            with col_chart2:
-                # Accuracy Comparison
-                acc_values = [float(r['Historical Accuracy'].strip('%')) for r in table_rows]
-                fig2 = go.Figure(data=[go.Bar(x=labels, y=acc_values, marker_color='#1f77b4')])
-                fig2.update_layout(title="Historical Accuracy Test", yaxis_title="Accuracy %", height=300, margin=dict(t=30, b=0, l=0, r=0))
-                st.plotly_chart(fig2, use_container_width=True)
+            with tab2:
+                st.caption("This model intuitively assigns weights based on performance. If a method was 90% accurate in the backtest, it gets a high weight. If it failed, it gets near zero.")
+                c1, c2 = st.columns([2, 1])
+                c1.dataframe(pd.DataFrame(acc_rows), use_container_width=True, hide_index=True)
+                
+                # Chart
+                fig = go.Figure(data=[go.Pie(labels=[r['Method'] for r in acc_rows], values=[float(r['Weight'].strip('%')) for r in acc_rows], hole=.4)])
+                fig.update_layout(title="Accuracy Weight Distribution", height=300, margin=dict(t=30, b=0, l=0, r=0))
+                c2.plotly_chart(fig, use_container_width=True)
