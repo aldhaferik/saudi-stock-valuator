@@ -1,4 +1,7 @@
-yfinance
-pandas
 streamlit
+pandas
+numpy
+scipy
+yfinance
 plotly
+requests
