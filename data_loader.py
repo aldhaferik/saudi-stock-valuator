@@ -1,118 +1,133 @@
-import numpy as np
-from scipy.optimize import minimize
-from datetime import datetime
+import streamlit as st
+import yfinance as yf
 import pandas as pd
-from data_loader import SaudiStockLoader
-from valuation_engine import ValuationEngine
+import requests
+from io import StringIO
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
 
-class ValuationOptimizer:
-    def __init__(self):
-        self.loader = SaudiStockLoader()
+# --- CONFIGURATION ---
+try:
+    TWELVE_DATA_API_KEY = st.secrets.get("TWELVE_DATA_API_KEY", "YOUR_KEY_HERE")
+    ALPHA_VANTAGE_API_KEY = st.secrets.get("ALPHA_VANTAGE_API_KEY", "YOUR_KEY_HERE")
+except:
+    TWELVE_DATA_API_KEY = "YOUR_KEY_HERE"
+    ALPHA_VANTAGE_API_KEY = "YOUR_KEY_HERE"
+
+class SaudiStockLoader:
+    def __init__(self, td_key=TWELVE_DATA_API_KEY, av_key=ALPHA_VANTAGE_API_KEY):
+        self.suffix = ".SR"
+        self.td_key = td_key
+        self.av_key = av_key
+
+    def fetch_full_data(self, stock_code):
+        print(f"\n--- 🕵️‍♂️ Starting Data Hunt for Stock: {stock_code} ---")
         
-    def find_optimal_strategy(self, stock_code):
-        # 1. Fetch Full Data
-        full_data = self.loader.fetch_full_data(stock_code)
-        if not full_data or full_data['prices'].empty:
-            return {"error": "Could not retrieve sufficient data."}
+        # 1. Try Yahoo Finance
+        try:
+            data = self._try_yahoo(stock_code)
+            if self._is_valid(data): return data
+        except Exception as e: print(f"   ❌ Yahoo Error: {e}")
 
-        # 2. Dynamic Date Setup
-        now = datetime.now()
-        current_month, current_day = now.month, now.day
-        test_years = range(now.year - 4, now.year) # Last 4 years
+        # 2. Try Twelve Data
+        try:
+            data = self._try_twelve_data(stock_code)
+            if self._is_valid(data): return data
+        except Exception as e: print(f"   ❌ Twelve Data Error: {e}")
+
+        # 3. Try Alpha Vantage
+        try:
+            data = self._try_alpha_vantage(stock_code)
+            if self._is_valid(data): return data
+        except Exception as e: print(f"   ❌ Alpha Vantage Error: {e}")
+
+        # 4. Try Selenium Scraper
+        try:
+            data = self._try_saudi_exchange_scrape(stock_code)
+            if self._is_valid(data): return data
+        except Exception as e: print(f"   ❌ Scraper Error: {e}")
+
+        return None
+
+    def _is_valid(self, data):
+        if not data: return False
+        if data['financials']['balance_sheet'].empty: return False
+        return True
+
+    def _try_yahoo(self, stock_code):
+        clean_code = f"{stock_code}{self.suffix}" if not str(stock_code).endswith(self.suffix) else stock_code
+        ticker = yf.Ticker(clean_code)
+        prices = ticker.history(period="10y") # Fetch max history for better backtesting
+        if prices.empty: return None
+        return self._package_data(ticker.info, prices, ticker.balance_sheet, ticker.income_stmt, ticker.cashflow)
+
+    def _try_twelve_data(self, stock_code):
+        # Placeholder for robust implementation
+        return None
+
+    def _try_alpha_vantage(self, stock_code):
+        # Placeholder for robust implementation
+        return None
+
+    def _try_saudi_exchange_scrape(self, stock_code):
+        url = f"https://www.saudiexchange.sa/wps/portal/saudiexchange/hidden/company-profile-main/?companySymbol={stock_code}"
+        driver = None
+        try:
+            options = Options()
+            options.add_argument("--headless")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            driver = webdriver.Chrome(options=options)
+            driver.get(url)
+            html = driver.page_source
+            driver.quit()
+            return None # Implementation requires complex HTML parsing mapping
+        except:
+            if driver: driver.quit()
+            return None
+
+    def _package_data(self, meta, prices, bs, is_, cf):
+        # Ensure all columns are timezone-naive to prevent comparison errors
+        def sanitize(df):
+            if df.empty: return df
+            df.columns = pd.to_datetime(df.columns).tz_localize(None)
+            return df
         
-        history_log = []
-        solver_training_data = [] 
-
-        # 3. Walk-Forward Loop
-        for year in test_years:
-            # Handle Leap Years
-            try:
-                test_date = datetime(year, current_month, current_day)
-                target_date = datetime(year + 1, current_month, current_day)
-            except ValueError:
-                test_date = datetime(year, current_month, 28)
-                target_date = datetime(year + 1, current_month, 28)
-
-            test_date_str = test_date.strftime('%Y-%m-%d')
-            target_date_str = target_date.strftime('%Y-%m-%d')
-            
-            # Get historical snapshot
-            sim_data = self.loader.get_data_as_of_date(full_data, test_date_str)
-            if not sim_data or sim_data['financials']['balance_sheet'].empty: continue 
-            
-            # Find actual future price
-            prices = full_data['prices'].copy()
-            if prices.index.tz is not None: prices.index = prices.index.tz_localize(None)
-            
-            future_prices = prices[prices.index >= pd.to_datetime(target_date_str)]
-            if future_prices.empty: continue 
-            actual_future_price = future_prices['Close'].iloc[0]
-
-            # Run Valuation Models
-            engine = ValuationEngine(sim_data['financials'])
-            vals = {
-                "DCF": engine.dcf_valuation(growth_rate=0.04),
-                "PE": engine.multiples_valuation(pe_ratio=18.0)['PE_Valuation'],
-                "PB": engine.multiples_valuation(pb_ratio=2.5)['PB_Valuation'],
-                "EV": engine.multiples_valuation(ev_ebitda_ratio=12.0)['EBITDA_Valuation']
+        return {
+            "meta": meta,
+            "prices": prices,
+            "financials": {
+                "balance_sheet": sanitize(bs), 
+                "income_statement": sanitize(is_), 
+                "cash_flow": sanitize(cf)
             }
+        }
 
-            # Log Data
-            history_log.append({
-                "year_start": test_date_str,
-                "actual_price_next_year": actual_future_price,
-                "predictions": vals
-            })
-            solver_training_data.append(([vals["DCF"], vals["PE"], vals["PB"], vals["EV"]], actual_future_price))
-
-        if not history_log:
-            return {"error": "Not enough historical data for backtesting."}
-
-        # --- STRATEGY 1: ACCURACY (Merit-Based) ---
-        method_names = ["DCF", "PE", "PB", "EV"]
-        acc_scores = {name: [] for name in method_names}
+    def get_data_as_of_date(self, stock_data, valuation_date_str):
+        cutoff_date = pd.to_datetime(valuation_date_str).tz_localize(None)
         
-        for record in history_log:
-            actual = record['actual_price_next_year']
-            for name, val in record['predictions'].items():
-                if val > 0:
-                    acc = max(0, 1.0 - (abs(val - actual) / actual))
-                    acc_scores[name].append(acc)
-                else:
-                    acc_scores[name].append(0)
+        prices = stock_data["prices"].copy()
+        if prices.index.tz is not None:
+             prices.index = prices.index.tz_localize(None)
+             
+        past_prices = prices[prices.index < cutoff_date]
+        if past_prices.empty: return None
+        simulated_current_price = past_prices['Close'].iloc[-1]
 
-        final_acc_strategy = {}
-        total_score = 0
-        temp_scores = {}
-        
-        for name, acc_list in acc_scores.items():
-            avg_acc = np.mean(acc_list) if acc_list else 0
-            score = avg_acc ** 2 
-            temp_scores[name] = score
-            total_score += score
-            
-        for name in method_names:
-            weight = temp_scores[name] / total_score if total_score > 0 else 0.25
-            final_acc_strategy[name] = {"weight": weight, "accuracy": np.mean(acc_scores[name])}
+        def filter_financials(df):
+            if df is None or df.empty: return df
+            # Filter columns (which are dates) to keep only those BEFORE cutoff_date
+            valid_cols = [c for c in df.columns if c < cutoff_date]
+            return df[valid_cols]
 
-        # --- STRATEGY 2: SOLVER (Minimize Total Error) ---
-        def objective_function(weights):
-            total_error = 0
-            for pred_vector, actual in solver_training_data:
-                combined_val = np.dot(weights, pred_vector)
-                total_error += (combined_val - actual) ** 2
-            return total_error
-
-        constraints = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1})
-        bounds = tuple((0, 1) for _ in range(4))
-        res = minimize(objective_function, [0.25]*4, method='SLSQP', bounds=bounds, constraints=constraints)
-        
-        final_solver_strategy = {}
-        for i, name in enumerate(method_names):
-            final_solver_strategy[name] = {"weight": res.x[i], "accuracy": final_acc_strategy[name]["accuracy"]}
+        past_financials = {
+            "balance_sheet": filter_financials(stock_data["financials"]["balance_sheet"]),
+            "income_statement": filter_financials(stock_data["financials"]["income_statement"]),
+            "cash_flow": filter_financials(stock_data["financials"]["cash_flow"])
+        }
 
         return {
-            "strategies": {"accuracy": final_acc_strategy, "solver": final_solver_strategy},
-            "history": history_log,
-            "full_data": full_data
+            "simulation_date": valuation_date_str,
+            "price_at_simulation": simulated_current_price,
+            "financials": past_financials
         }
