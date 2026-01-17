@@ -24,7 +24,6 @@ with st.sidebar:
     st.header("Settings")
     stock_input = st.text_input("Stock Code", value="1120")
     run_btn = st.button("🚀 Run Analysis", type="primary")
-    st.info("Note: Price trends and metrics are based on available data from configured APIs.")
 
 # --- MAIN LOGIC ---
 if run_btn and stock_input:
@@ -44,7 +43,6 @@ if run_btn and stock_input:
             st.subheader(f"📊 Market Profile: {stock_input}")
             m1, m2, m3, m4 = st.columns(4)
             
-            # Helper to handle missing data gracefully
             beta = meta.get("beta", "N/A")
             pe = meta.get("trailingPE", "N/A")
             if isinstance(pe, (float, int)): pe = f"{pe:.2f}"
