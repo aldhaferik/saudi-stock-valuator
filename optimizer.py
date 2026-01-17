@@ -19,7 +19,7 @@ class ValuationOptimizer:
         now = datetime.now()
         current_month, current_day = now.month, now.day
         
-        # --- FIX 1: 5-YEAR BACKTEST ---
+        # 5-YEAR BACKTEST
         test_years = range(now.year - 5, now.year) 
         
         history_log = []
@@ -100,16 +100,25 @@ class ValuationOptimizer:
                 total_error += (combined_val - actual) ** 2
             return total_error
 
-        # --- FIX 2: ZERO-WEIGHT PENALTY ---
+        # --- NEW FIX: STRICT QUALITY FILTER ---
         bounds_list = []
         for name in method_names:
+            # 1. Must have data
             has_valid_data = any(x['predictions'][name] > 0 for x in history_log)
-            if has_valid_data:
-                bounds_list.append((0, 1)) 
+            # 2. Must have decent accuracy (> 10%)
+            is_accurate = final_acc_strategy[name]["accuracy"] > 0.10
+            
+            if has_valid_data and is_accurate:
+                bounds_list.append((0, 1)) # Allowed to use
             else:
-                bounds_list.append((0, 0)) 
+                bounds_list.append((0, 0)) # BANNED (Force 0% Weight)
 
         constraints = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1})
+        
+        # If ALL methods are bad, revert to equal weights to avoid crash
+        if all(b == (0, 0) for b in bounds_list):
+             bounds_list = [(0, 1)] * 4
+
         res = minimize(objective_function, [0.25]*4, method='SLSQP', bounds=tuple(bounds_list), constraints=constraints)
         
         final_solver_strategy = {}
