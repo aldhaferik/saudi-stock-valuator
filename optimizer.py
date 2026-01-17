@@ -18,14 +18,15 @@ class ValuationOptimizer:
         # 2. Dynamic Date Setup
         now = datetime.now()
         current_month, current_day = now.month, now.day
-        test_years = range(now.year - 4, now.year) # Last 4 years
+        
+        # --- FIX 1: 5-YEAR BACKTEST ---
+        test_years = range(now.year - 5, now.year) 
         
         history_log = []
         solver_training_data = [] 
 
         # 3. Walk-Forward Loop
         for year in test_years:
-            # Handle Leap Years
             try:
                 test_date = datetime(year, current_month, current_day)
                 target_date = datetime(year + 1, current_month, current_day)
@@ -36,11 +37,9 @@ class ValuationOptimizer:
             test_date_str = test_date.strftime('%Y-%m-%d')
             target_date_str = target_date.strftime('%Y-%m-%d')
             
-            # Get historical snapshot
             sim_data = self.loader.get_data_as_of_date(full_data, test_date_str)
             if not sim_data or sim_data['financials']['balance_sheet'].empty: continue 
             
-            # Find actual future price
             prices = full_data['prices'].copy()
             if prices.index.tz is not None: prices.index = prices.index.tz_localize(None)
             
@@ -48,7 +47,6 @@ class ValuationOptimizer:
             if future_prices.empty: continue 
             actual_future_price = future_prices['Close'].iloc[0]
 
-            # Run Valuation Models
             engine = ValuationEngine(sim_data['financials'])
             vals = {
                 "DCF": engine.dcf_valuation(growth_rate=0.04),
@@ -57,7 +55,6 @@ class ValuationOptimizer:
                 "EV": engine.multiples_valuation(ev_ebitda_ratio=12.0)['EBITDA_Valuation']
             }
 
-            # Log Data
             history_log.append({
                 "year_start": test_date_str,
                 "actual_price_next_year": actual_future_price,
@@ -103,9 +100,17 @@ class ValuationOptimizer:
                 total_error += (combined_val - actual) ** 2
             return total_error
 
+        # --- FIX 2: ZERO-WEIGHT PENALTY ---
+        bounds_list = []
+        for name in method_names:
+            has_valid_data = any(x['predictions'][name] > 0 for x in history_log)
+            if has_valid_data:
+                bounds_list.append((0, 1)) 
+            else:
+                bounds_list.append((0, 0)) 
+
         constraints = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1})
-        bounds = tuple((0, 1) for _ in range(4))
-        res = minimize(objective_function, [0.25]*4, method='SLSQP', bounds=bounds, constraints=constraints)
+        res = minimize(objective_function, [0.25]*4, method='SLSQP', bounds=tuple(bounds_list), constraints=constraints)
         
         final_solver_strategy = {}
         for i, name in enumerate(method_names):
