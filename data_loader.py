@@ -6,7 +6,6 @@ from io import StringIO
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
-# --- CONFIGURATION ---
 try:
     TWELVE_DATA_API_KEY = st.secrets.get("TWELVE_DATA_API_KEY", "YOUR_KEY_HERE")
     ALPHA_VANTAGE_API_KEY = st.secrets.get("ALPHA_VANTAGE_API_KEY", "YOUR_KEY_HERE")
@@ -29,13 +28,13 @@ class SaudiStockLoader:
             if self._is_valid(data): return data
         except Exception as e: print(f"   ❌ Yahoo Error: {e}")
 
-        # 2. Try Twelve Data
+        # 2. Try Twelve Data (Placeholder)
         try:
             data = self._try_twelve_data(stock_code)
             if self._is_valid(data): return data
         except Exception as e: print(f"   ❌ Twelve Data Error: {e}")
 
-        # 3. Try Alpha Vantage
+        # 3. Try Alpha Vantage (Placeholder)
         try:
             data = self._try_alpha_vantage(stock_code)
             if self._is_valid(data): return data
@@ -57,16 +56,14 @@ class SaudiStockLoader:
     def _try_yahoo(self, stock_code):
         clean_code = f"{stock_code}{self.suffix}" if not str(stock_code).endswith(self.suffix) else stock_code
         ticker = yf.Ticker(clean_code)
-        prices = ticker.history(period="10y") # Fetch max history for better backtesting
+        prices = ticker.history(period="10y") 
         if prices.empty: return None
         return self._package_data(ticker.info, prices, ticker.balance_sheet, ticker.income_stmt, ticker.cashflow)
 
     def _try_twelve_data(self, stock_code):
-        # Placeholder for robust implementation
         return None
 
     def _try_alpha_vantage(self, stock_code):
-        # Placeholder for robust implementation
         return None
 
     def _try_saudi_exchange_scrape(self, stock_code):
@@ -81,13 +78,12 @@ class SaudiStockLoader:
             driver.get(url)
             html = driver.page_source
             driver.quit()
-            return None # Implementation requires complex HTML parsing mapping
+            return None 
         except:
             if driver: driver.quit()
             return None
 
     def _package_data(self, meta, prices, bs, is_, cf):
-        # Ensure all columns are timezone-naive to prevent comparison errors
         def sanitize(df):
             if df.empty: return df
             df.columns = pd.to_datetime(df.columns).tz_localize(None)
@@ -116,7 +112,6 @@ class SaudiStockLoader:
 
         def filter_financials(df):
             if df is None or df.empty: return df
-            # Filter columns (which are dates) to keep only those BEFORE cutoff_date
             valid_cols = [c for c in df.columns if c < cutoff_date]
             return df[valid_cols]
 
