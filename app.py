@@ -186,26 +186,77 @@ if run_btn and stock_input:
                 </div>
                 """, unsafe_allow_html=True)
 
+           # ... (Keep all the top code from the previous app.py) ...
+
             # --- 5. DETAILED BREAKDOWN TABS ---
             st.markdown("###")
-            tab1, tab2 = st.tabs(["🤖 AI Solver Details", "🎯 Accuracy Model Details"])
+            tab1, tab2 = st.tabs(["📅 Walk-Forward Analysis (Year-by-Year)", "🎯 Final Weights"])
             
             with tab1:
-                st.caption("This model mixes methods to mathematically minimize the gap between valuation and price in the past.")
-                c1, c2 = st.columns([2, 1])
-                c1.dataframe(pd.DataFrame(ai_rows), use_container_width=True, hide_index=True)
+                st.caption("This shows how each model performed in predicting the price 1 year into the future, repeated over multiple years.")
                 
-                # Pie Chart
-                fig = go.Figure(data=[go.Pie(labels=[r['Method'] for r in ai_rows], values=[float(r['Weight'].strip('%')) for r in ai_rows], hole=.4)])
-                fig.update_layout(title="AI Weight Distribution", height=300, margin=dict(t=30, b=0, l=0, r=0))
-                c2.plotly_chart(fig, use_container_width=True)
+                # Prepare data for the timeline chart
+                history = result['walk_forward_history']
+                years = [rec['year_start'][:4] for rec in history]
+                
+                # Create a Line Chart of Accuracy Over Time
+                fig_timeline = go.Figure()
+                
+                # Add Actual Price Line (Baseline)
+                # Note: We can't easily plot "Actual" vs "Predicted" on one line because the dates shift.
+                # Instead, we plot "Accuracy %" per year.
+                
+                methods = ["DCF (Moderate)", "P/E Multiple", "P/B Multiple", "EV/EBITDA"]
+                
+                for method in methods:
+                    accuracies = []
+                    for rec in history:
+                        pred = rec['predictions'].get(method, 0)
+                        actual = rec['actual_price_next_year']
+                        if pred > 0:
+                            # Accuracy = 1 - Error
+                            acc = max(0, 1 - (abs(pred - actual) / actual))
+                            accuracies.append(acc * 100)
+                        else:
+                            accuracies.append(0)
+                    
+                    fig_timeline.add_trace(go.Scatter(x=years, y=accuracies, mode='lines+markers', name=method))
+
+                fig_timeline.update_layout(
+                    title="Model Accuracy Over Time (Rolling Backtest)",
+                    xaxis_title="Prediction Year",
+                    yaxis_title="Accuracy % (100% = Perfect Prediction)",
+                    hovermode="x unified",
+                    height=400
+                )
+                st.plotly_chart(fig_timeline, use_container_width=True)
+                
+                # Show the raw data table
+                st.subheader("Year-by-Year Breakdown")
+                rows = []
+                for rec in history:
+                    row = {"Year": rec['year_start'][:4], "Real Price (1 Yr Later)": f"{rec['actual_price_next_year']:.2f}"}
+                    for method, val in rec['predictions'].items():
+                        row[method] = f"{val:.2f}"
+                    rows.append(row)
+                st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
             with tab2:
-                st.caption("This model strictly rewards the most accurate methods. If a method worked well in the past, it gets a high weight today.")
+                st.caption("These weights are calculated by averaging the accuracy across all the years shown in the Walk-Forward test.")
+                
+                acc_strategy = result['strategies']['accuracy']
+                # Convert to table format
+                acc_rows = []
+                for m, data in acc_strategy.items():
+                    acc_rows.append({
+                        "Method": m,
+                        "Avg 4-Year Accuracy": f"{data['historical_accuracy']:.1%}",
+                        "Final Weight": f"{data['weight']:.1%}"
+                    })
+                
                 c1, c2 = st.columns([2, 1])
                 c1.dataframe(pd.DataFrame(acc_rows), use_container_width=True, hide_index=True)
                 
-                # Pie Chart
-                fig = go.Figure(data=[go.Pie(labels=[r['Method'] for r in acc_rows], values=[float(r['Weight'].strip('%')) for r in acc_rows], hole=.4)])
-                fig.update_layout(title="Accuracy Weight Distribution", height=300, margin=dict(t=30, b=0, l=0, r=0))
+                fig = go.Figure(data=[go.Pie(labels=[r['Method'] for r in acc_rows], values=[float(r['Final Weight'].strip('%')) for r in acc_rows], hole=.4)])
+                fig.update_layout(title="Final Averaged Weights", height=300, margin=dict(t=30, b=0, l=0, r=0))
                 c2.plotly_chart(fig, use_container_width=True)
