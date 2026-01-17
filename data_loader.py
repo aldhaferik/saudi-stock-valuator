@@ -24,58 +24,40 @@ class SaudiStockLoader:
         self.av_key = av_key
 
     # [Keep fetch_full_data and other methods exactly the same...]
-    def fetch_full_data(self, stock_code):
-        # ... (Your existing cascading logic) ...
+ def fetch_full_data(self, stock_code):
         print(f"\n--- 🕵️‍♂️ Starting Data Hunt for Stock: {stock_code} ---")
         
         # 1. Try Yahoo Finance
-        data = self._try_yahoo(stock_code)
-        if self._is_valid(data): return data
-        print("   ⚠️ Yahoo data missing or suspicious. Switching to Backup 1...")
+        try:
+            data = self._try_yahoo(stock_code)
+            if self._is_valid(data): 
+                print("   ✅ Yahoo Finance Success!")
+                return data
+            print("   ❌ Yahoo Data Invalid (Empty or Zero Assets).")
+        except Exception as e:
+            print(f"   ❌ Yahoo Error: {e}")
 
         # 2. Try Twelve Data
-        data = self._try_twelve_data(stock_code)
-        if self._is_valid(data): return data
-        print("   ⚠️ TwelveData missing. Switching to Backup 2...")
+        try:
+            data = self._try_twelve_data(stock_code)
+            if self._is_valid(data): 
+                print("   ✅ Twelve Data Success!")
+                return data
+            print("   ❌ Twelve Data Invalid.")
+        except Exception as e:
+            print(f"   ❌ Twelve Data Error: {e}")
 
         # 3. Try Alpha Vantage
-        data = self._try_alpha_vantage(stock_code)
-        if self._is_valid(data): return data
-        print("   ⚠️ AlphaVantage missing. Switching to Web Scraper...")
-
-        # 4. Try Saudi Exchange Scraper (SELENIUM VERSION)
-        data = self._try_saudi_exchange_scrape(stock_code)
-        if self._is_valid(data): return data
-        print("   ⚠️ Scraper failed. Checking Local Backup...")
-
-        # 5. Try Local Backup
-        data = self._try_local_backup(stock_code)
-        if self._is_valid(data): return data
-
-        print("❌ CRITICAL: All 5 data sources failed.")
-        return None
-
-    def _is_valid(self, data):
-        if not data: return False
-        if data['financials']['balance_sheet'].empty: return False
         try:
-            val = data['financials']['balance_sheet'].iloc[0, 0]
-            if val == 0: return False
-        except:
-            pass
-        return True
+            data = self._try_alpha_vantage(stock_code)
+            if self._is_valid(data): 
+                print("   ✅ Alpha Vantage Success!")
+                return data
+            print("   ❌ Alpha Vantage Invalid.")
+        except Exception as e:
+            print(f"   ❌ Alpha Vantage Error: {e}")
 
-    # ... [Keep _try_yahoo, _try_twelve_data, _try_alpha_vantage unchanged] ...
-    def _try_yahoo(self, stock_code):
-        # (Paste your existing Yahoo logic here)
-        return None
-        
-    def _try_twelve_data(self, stock_code):
-        # (Paste your existing TwelveData logic here)
-        return None
-
-    def _try_alpha_vantage(self, stock_code):
-        # (Paste your existing AlphaVantage logic here)
+        print("❌ CRITICAL: All data sources failed.")
         return None
 
     # --- SOURCE 4: SAUDI EXCHANGE SCRAPER (UPDATED WITH SELENIUM) ---
