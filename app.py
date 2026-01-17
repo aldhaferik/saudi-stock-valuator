@@ -1,188 +1,129 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
-import requests
-import os
-from io import StringIO
+from optimizer import ValuationOptimizer
+import plotly.graph_objects as go
 
-# --- CONFIGURATION ---
-try:
-    TWELVE_DATA_API_KEY = st.secrets["TWELVE_DATA_API_KEY"]
-    ALPHA_VANTAGE_API_KEY = st.secrets["ALPHA_VANTAGE_API_KEY"]
-except (FileNotFoundError, KeyError):
-    TWELVE_DATA_API_KEY = "YOUR_KEY_HERE"
-    ALPHA_VANTAGE_API_KEY = "YOUR_KEY_HERE"
+st.set_page_config(page_title="Saudi Stock Valuator AI", page_icon="📊", layout="centered")
 
-class SaudiStockLoader:
-    def __init__(self, td_key=TWELVE_DATA_API_KEY, av_key=ALPHA_VANTAGE_API_KEY):
-        self.suffix = ".SR"
-        self.td_key = td_key
-        self.av_key = av_key
+st.markdown("""
+    <style>
+    .big-metric { font-size: 32px; font-weight: bold; color: #0e1117; }
+    .undervalued { color: #009933; font-weight: bold; }
+    .overvalued { color: #cc0000; font-weight: bold; }
+    .card { background-color: #f9f9f9; padding: 20px; border-radius: 10px; margin-bottom: 15px; border: 1px solid #ddd; }
+    </style>
+    """, unsafe_allow_html=True)
 
-    def fetch_full_data(self, stock_code):
-        print(f"\n--- 🕵️‍♂️ Starting Data Hunt for Stock: {stock_code} ---")
+st.title("🇸🇦 Saudi Stock Valuation AI")
+
+with st.sidebar:
+    st.header("Settings")
+    stock_input = st.text_input("Stock Code", value="1120")
+    run_btn = st.button("🚀 Run Analysis", type="primary")
+
+if run_btn and stock_input:
+    optimizer = ValuationOptimizer()
+    
+    with st.spinner(f"🔍 Analyzing {stock_input}..."):
+        result = optimizer.find_optimal_strategy(stock_input)
         
-        # 1. Try Yahoo Finance
-        data = self._try_yahoo(stock_code)
-        if self._is_valid(data): return data
-        print("   ⚠️ Yahoo data missing or suspicious. Switching to Backup 1...")
-
-        # 2. Try Twelve Data
-        data = self._try_twelve_data(stock_code)
-        if self._is_valid(data): return data
-        print("   ⚠️ TwelveData missing. Switching to Backup 2...")
-
-        # 3. Try Alpha Vantage
-        data = self._try_alpha_vantage(stock_code)
-        if self._is_valid(data): return data
-        print("   ⚠️ AlphaVantage missing. Switching to Web Scraper...")
-
-        # 4. Try Saudi Exchange Scraper (New!)
-        data = self._try_saudi_exchange_scrape(stock_code)
-        if self._is_valid(data): return data
-        print("   ⚠️ Scraper failed. Checking Local Backup...")
-
-        # 5. Try Local Backup
-        data = self._try_local_backup(stock_code)
-        if self._is_valid(data): return data
-
-        print("❌ CRITICAL: All 5 data sources failed.")
-        return None
-
-    def _is_valid(self, data):
-        """Checks if the data package has actual numbers."""
-        if not data: return False
-        if data['financials']['balance_sheet'].empty: return False
-        # Check if Total Assets is 0 (common API bug)
-        try:
-            val = data['financials']['balance_sheet'].iloc[0, 0]
-            if val == 0: return False
-        except:
-            pass
-        return True
-
-    # --- SOURCE 1: YAHOO ---
-    def _try_yahoo(self, stock_code):
-        print(f"1. Attempting Yahoo Finance...")
-        try:
-            clean_code = f"{stock_code}{self.suffix}" if not str(stock_code).endswith(self.suffix) else stock_code
-            ticker = yf.Ticker(clean_code)
-            prices = ticker.history(period="5y")
-            if prices.empty or ticker.balance_sheet.empty: return None
-            return self._package_data(ticker.info, prices, ticker.balance_sheet, ticker.income_stmt, ticker.cashflow)
-        except: return None
-
-    # --- SOURCE 2: TWELVE DATA ---
-    def _try_twelve_data(self, stock_code):
-        print(f"2. Attempting Twelve Data...")
-        # ... (Same logic as previous version) ...
-        # [Paste the TwelveData logic I gave you previously here]
-        # For brevity, I'm skipping re-pasting the exact code block, but keep your existing logic!
-        return None 
-
-    # --- SOURCE 3: ALPHA VANTAGE ---
-    def _try_alpha_vantage(self, stock_code):
-        print(f"3. Attempting Alpha Vantage...")
-        # ... (Same logic as previous version) ...
-        # [Paste the AlphaVantage logic I gave you previously here]
-        return None
-
-    # --- SOURCE 4: SAUDI EXCHANGE SCRAPER (NEW) ---
-    def _try_saudi_exchange_scrape(self, stock_code):
-        print(f"4. Attempting SaudiExchange.sa Scraper...")
-        
-        # NOTE: Tadawul uses heavy JavaScript. Direct scraping often fails without Selenium.
-        # We attempt to fetch the 'Fundamental Ratios' table which is sometimes accessible.
-        
-        url = f"https://www.saudiexchange.sa/wps/portal/saudiexchange/hidden/company-profile-main/?companySymbol={stock_code}"
-        
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9"
-        }
-        
-        try:
-            response = requests.get(url, headers=headers, timeout=10)
-            if response.status_code != 200:
-                print(f"   -> Scraper: HTTP {response.status_code}")
-                return None
+        if "error" in result:
+            st.error(result['error'])
+        else:
+            # --- 1. Calculate Current Values ---
+            full_data = result['full_data_cache']
+            latest_price = full_data['prices']['Close'].iloc[-1] # Real-time(ish) price
             
-            # Use Pandas to find tables in the HTML
-            dfs = pd.read_html(StringIO(response.text))
+            from valuation_engine import ValuationEngine
+            engine = ValuationEngine(full_data['financials'])
             
-            # We look for tables that look like financials
-            print(f"   -> Scraper found {len(dfs)} tables.")
+            # Run models on TODAY's data
+            dcf_curr = engine.dcf_valuation(growth_rate=0.04)
+            mults_curr = engine.multiples_valuation(pe_ratio=18.0, pb_ratio=2.5, ev_ebitda_ratio=12.0)
             
-            # This is highly experimental because Tadawul changes their layout
-            # We return None for now because mapping dynamic HTML tables to 
-            # the strict Balance Sheet format required by the Engine is risky without human verification.
-            # But this confirms we CAN reach the site.
+            curr_vals = {
+                "DCF (Moderate)": dcf_curr,
+                "P/E Multiple": mults_curr['PE_Valuation'],
+                "P/B Multiple": mults_curr['PB_Valuation'],
+                "EV/EBITDA": mults_curr['EBITDA_Valuation']
+            }
+
+            # --- 2. Calculate Weighted Fair Value ---
+            fair_value = 0
+            table_rows = []
             
-            # Realistically: We can grab the P/E and Beta from here if simple APIs fail.
-            pass
+            for method, metrics in result['optimized_weights'].items():
+                val_now = curr_vals.get(method, 0)
+                weight = metrics['weight']
+                accuracy = metrics['historical_accuracy']
+                
+                fair_value += (val_now * weight)
+                
+                table_rows.append({
+                    "Method": method,
+                    "Current Value (SAR)": f"{val_now:.2f}",
+                    "Historical Accuracy": f"{accuracy:.1%}",
+                    "AI Weight": f"{weight:.1%}"
+                })
 
-        except Exception as e:
-            print(f"   -> Scraper Failed: {e}")
-        
-        return None
-
-    # --- SOURCE 5: LOCAL BACKUP ---
-    def _try_local_backup(self, stock_code):
-        print(f"5. Attempting Local Backup...")
-        path = "data_backup"
-        clean_code = str(stock_code).replace(".SR", "")
-        try:
-            bs = pd.read_csv(f"{path}/{clean_code}_bs.csv", index_col=0)
-            is_ = pd.read_csv(f"{path}/{clean_code}_is.csv", index_col=0)
-            cf = pd.read_csv(f"{path}/{clean_code}_cf.csv", index_col=0)
+            # --- 3. Determine Verdict (Over/Under) ---
+            diff = fair_value - latest_price
+            diff_pct = (diff / latest_price) * 100
             
-            bs.columns = pd.to_datetime(bs.columns)
-            is_.columns = pd.to_datetime(is_.columns)
-            cf.columns = pd.to_datetime(cf.columns)
+            verdict_color = "undervalued" if diff > 0 else "overvalued"
+            verdict_text = "UNDERVALUED" if diff > 0 else "OVERVALUED"
+            arrow = "🔼" if diff > 0 else "🔽"
 
-            return self._package_data({"symbol": stock_code}, pd.DataFrame(), bs, is_, cf)
-        except: return None
+            # --- DISPLAY SECTION ---
+            
+            # A. Main Scorecards
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(f"""
+                <div class="card">
+                    <div style="font-size:14px; color:#666;">Current Market Price</div>
+                    <div class="big-metric">{latest_price:.2f} SAR</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col2:
+                st.markdown(f"""
+                <div class="card">
+                    <div style="font-size:14px; color:#666;">AI Fair Value</div>
+                    <div class="big-metric">{fair_value:.2f} SAR</div>
+                </div>
+                """, unsafe_allow_html=True)
 
-    def _package_data(self, meta, prices, bs, is_, cf):
-        return {
-            "meta": meta,
-            "prices": prices,
-            "financials": {"balance_sheet": bs, "income_statement": is_, "cash_flow": cf}
-        }
+            # B. The Verdict
+            st.markdown(f"""
+            <div style="text-align:center; padding: 10px; font-size: 24px; border: 2px solid #eee; border-radius: 10px;">
+                Verdict: <span class="{verdict_color}">{verdict_text} by {abs(diff_pct):.2f}%</span> {arrow}
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.divider()
 
-    # [Paste the FIXED get_data_as_of_date method here]
-    def get_data_as_of_date(self, stock_data, valuation_date_str):
-        # ... (Same time-zone fix as before) ...
-        # I can re-supply this block if you lost it.
-        cutoff_date = pd.to_datetime(valuation_date_str)
-        if stock_data["prices"].empty: return None
+            # C. Detailed Breakdown Table
+            st.subheader("📊 Methodology Breakdown")
+            st.caption(f"Weights are optimized based on backtesting against {result['backtest_date']}.")
+            
+            df_table = pd.DataFrame(table_rows)
+            st.dataframe(df_table, hide_index=True, use_container_width=True)
 
-        price_index = stock_data["prices"].index
-        if price_index.tz is not None:
-            cutoff_date = cutoff_date.tz_localize(price_index.tz)
+            # D. Visuals
+            col_chart1, col_chart2 = st.columns(2)
+            
+            with col_chart1:
+                # Weight Distribution
+                labels = [r['Method'] for r in table_rows]
+                values = [float(r['AI Weight'].strip('%')) for r in table_rows]
+                fig1 = go.Figure(data=[go.Pie(labels=labels, values=values, hole=.4)])
+                fig1.update_layout(title="AI Weight Allocation", height=300, margin=dict(t=30, b=0, l=0, r=0))
+                st.plotly_chart(fig1, use_container_width=True)
 
-        past_prices = stock_data["prices"][stock_data["prices"].index < cutoff_date]
-        if past_prices.empty: return None
-        simulated_current_price = past_prices['Close'].iloc[-1]
-
-        def filter_financials(df):
-            if df is None or df.empty: return df
-            valid_cols = []
-            for col in df.columns:
-                col_dt = pd.to_datetime(col)
-                if col_dt.tz is not None: col_dt = col_dt.tz_localize(None)
-                naive_cutoff = cutoff_date.replace(tzinfo=None)
-                if col_dt < naive_cutoff: valid_cols.append(col)
-            return df[valid_cols]
-
-        past_financials = {
-            "balance_sheet": filter_financials(stock_data["financials"]["balance_sheet"]),
-            "income_statement": filter_financials(stock_data["financials"]["income_statement"]),
-            "cash_flow": filter_financials(stock_data["financials"]["cash_flow"])
-        }
-
-        return {
-            "simulation_date": valuation_date_str,
-            "price_at_simulation": simulated_current_price,
-            "financials": past_financials
-        }
+            with col_chart2:
+                # Accuracy Comparison
+                acc_values = [float(r['Historical Accuracy'].strip('%')) for r in table_rows]
+                fig2 = go.Figure(data=[go.Bar(x=labels, y=acc_values, marker_color='#1f77b4')])
+                fig2.update_layout(title="Historical Accuracy Test", yaxis_title="Accuracy %", height=300, margin=dict(t=30, b=0, l=0, r=0))
+                st.plotly_chart(fig2, use_container_width=True)
