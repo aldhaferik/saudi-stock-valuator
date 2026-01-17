@@ -1,5 +1,6 @@
 import numpy as np
-from datetime import datetime, timedelta
+from scipy.optimize import minimize
+from datetime import datetime
 import pandas as pd
 from data_loader import SaudiStockLoader
 from valuation_engine import ValuationEngine
@@ -9,130 +10,109 @@ class ValuationOptimizer:
         self.loader = SaudiStockLoader()
         
     def find_optimal_strategy(self, stock_code):
-        print(f"\n🚀 Starting Dynamic Walk-Forward Optimization for {stock_code}...")
-        
         # 1. Fetch Full Data
         full_data = self.loader.fetch_full_data(stock_code)
         if not full_data or full_data['prices'].empty:
-            return {"error": "Could not retrieve sufficient data for this stock."}
+            return {"error": "Could not retrieve sufficient data."}
 
-        # 2. Determine Dates Dynamically
+        # 2. Dynamic Date Setup
         now = datetime.now()
-        current_month = now.month
-        current_day = now.day
-        current_year = now.year
-        
-        # We want to test the last 4 years on THIS specific day (e.g., April 10)
-        # Generate years: [2022, 2023, 2024, 2025] (if today is 2026)
-        test_years = range(current_year - 4, current_year) 
+        current_month, current_day = now.month, now.day
+        test_years = range(now.year - 4, now.year) # Last 4 years
         
         history_log = []
-        method_errors = {
-            "DCF (Moderate)": [],
-            "P/E Multiple": [],
-            "P/B Multiple": [],
-            "EV/EBITDA": []
-        }
+        solver_training_data = [] 
 
-        # 3. The Walk-Forward Loop
+        # 3. Walk-Forward Loop
         for year in test_years:
-            # A. Set the "Test Date" (Same Month/Day, but past Year)
-            # Handle leap years (e.g., Feb 29) by falling back to Feb 28 if needed
+            # Handle Leap Years
             try:
-                test_date_obj = datetime(year, current_month, current_day)
-                target_date_obj = datetime(year + 1, current_month, current_day)
+                test_date = datetime(year, current_month, current_day)
+                target_date = datetime(year + 1, current_month, current_day)
             except ValueError:
-                # Fallback for leap year edge cases
-                test_date_obj = datetime(year, current_month, 28)
-                target_date_obj = datetime(year + 1, current_month, 28)
+                test_date = datetime(year, current_month, 28)
+                target_date = datetime(year + 1, current_month, 28)
 
-            test_date_str = test_date_obj.strftime('%Y-%m-%d')
-            target_date_str = target_date_obj.strftime('%Y-%m-%d')
+            test_date_str = test_date.strftime('%Y-%m-%d')
+            target_date_str = target_date.strftime('%Y-%m-%d')
             
-            # B. Travel back in time
+            # Get historical snapshot
             sim_data = self.loader.get_data_as_of_date(full_data, test_date_str)
-            if not sim_data or sim_data['financials']['balance_sheet'].empty:
-                continue # Skip if data missing for this old year
+            if not sim_data or sim_data['financials']['balance_sheet'].empty: continue 
             
-            # C. Get the "Actual Price" exactly 1 year later (The Truth)
-            # We look for the price ON or immediately AFTER the target date
-            future_prices = full_data['prices'][full_data['prices'].index >= target_date_str]
-            if future_prices.empty:
-                continue 
+            # Find actual future price
+            prices = full_data['prices'].copy()
+            if prices.index.tz is not None: prices.index = prices.index.tz_localize(None)
             
+            future_prices = prices[prices.index >= pd.to_datetime(target_date_str)]
+            if future_prices.empty: continue 
             actual_future_price = future_prices['Close'].iloc[0]
 
-            # D. Run Valuation Models (using ONLY data known at test_date)
+            # Run Valuation Models
             engine = ValuationEngine(sim_data['financials'])
-            
             vals = {
-                "DCF (Moderate)": engine.dcf_valuation(growth_rate=0.04),
-                "P/E Multiple": engine.multiples_valuation(pe_ratio=18.0)['PE_Valuation'],
-                "P/B Multiple": engine.multiples_valuation(pb_ratio=2.5)['PB_Valuation'],
-                "EV/EBITDA": engine.multiples_valuation(ev_ebitda_ratio=12.0)['EBITDA_Valuation']
+                "DCF": engine.dcf_valuation(growth_rate=0.04),
+                "PE": engine.multiples_valuation(pe_ratio=18.0)['PE_Valuation'],
+                "PB": engine.multiples_valuation(pb_ratio=2.5)['PB_Valuation'],
+                "EV": engine.multiples_valuation(ev_ebitda_ratio=12.0)['EBITDA_Valuation']
             }
 
-            # E. Log Performance for this Year
-            year_record = {
+            # Log Data
+            history_log.append({
                 "year_start": test_date_str,
-                "year_end": target_date_str,
                 "actual_price_next_year": actual_future_price,
                 "predictions": vals
-            }
-            history_log.append(year_record)
+            })
+            solver_training_data.append(([vals["DCF"], vals["PE"], vals["PB"], vals["EV"]], actual_future_price))
 
-            # Calculate Error
-            for method, prediction in vals.items():
-                if prediction > 0:
-                    error = abs(prediction - actual_future_price) / actual_future_price
-                    method_errors[method].append(error)
-
-        # 4. Aggregate Scores (Average Accuracy over all years)
         if not history_log:
-            # If walk-forward fails (e.g., new IPO), fall back to simple weights
-            default_w = 0.25
-            final_strategy = {k: {"weight": default_w, "historical_accuracy": 0.0} for k in method_errors.keys()}
-            return {
-                "stock": stock_code, 
-                "walk_forward_history": [], 
-                "strategies": {"accuracy": final_strategy, "solver": final_strategy},
-                "full_data_cache": full_data,
-                "error": "Not enough historical data for walk-forward validation (Stock might be too new)."
-            }
+            return {"error": "Not enough historical data for backtesting."}
 
-        final_strategy = {}
-        total_inverse_error = 0
-        method_scores = {}
+        # --- STRATEGY 1: ACCURACY (Merit-Based) ---
+        method_names = ["DCF", "PE", "PB", "EV"]
+        acc_scores = {name: [] for name in method_names}
         
-        for method, errors in method_errors.items():
-            if not errors:
-                avg_error = 1.0
-            else:
-                avg_error = np.mean(errors)
-            
-            accuracy_pct = max(0, 1.0 - avg_error)
-            score = accuracy_pct ** 2
-            method_scores[method] = {"acc": accuracy_pct, "score": score}
-            total_inverse_error += score
+        for record in history_log:
+            actual = record['actual_price_next_year']
+            for name, val in record['predictions'].items():
+                if val > 0:
+                    acc = max(0, 1.0 - (abs(val - actual) / actual))
+                    acc_scores[name].append(acc)
+                else:
+                    acc_scores[name].append(0)
 
-        # Normalize
-        for method, metrics in method_scores.items():
-            if total_inverse_error > 0:
-                weight = metrics['score'] / total_inverse_error
-            else:
-                weight = 0.25
+        final_acc_strategy = {}
+        total_score = 0
+        temp_scores = {}
+        
+        for name, acc_list in acc_scores.items():
+            avg_acc = np.mean(acc_list) if acc_list else 0
+            score = avg_acc ** 2 
+            temp_scores[name] = score
+            total_score += score
             
-            final_strategy[method] = {
-                "weight": round(weight, 4),
-                "historical_accuracy": metrics['acc'], 
-            }
+        for name in method_names:
+            weight = temp_scores[name] / total_score if total_score > 0 else 0.25
+            final_acc_strategy[name] = {"weight": weight, "accuracy": np.mean(acc_scores[name])}
+
+        # --- STRATEGY 2: SOLVER (Minimize Total Error) ---
+        def objective_function(weights):
+            total_error = 0
+            for pred_vector, actual in solver_training_data:
+                combined_val = np.dot(weights, pred_vector)
+                total_error += (combined_val - actual) ** 2
+            return total_error
+
+        constraints = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1})
+        bounds = tuple((0, 1) for _ in range(4))
+        res = minimize(objective_function, [0.25]*4, method='SLSQP', bounds=bounds, constraints=constraints)
+        
+        final_solver_strategy = {}
+        for i, name in enumerate(method_names):
+            final_solver_strategy[name] = {"weight": res.x[i], "accuracy": final_acc_strategy[name]["accuracy"]}
 
         return {
-            "stock": stock_code,
-            "walk_forward_history": history_log,
-            "strategies": {
-                "accuracy": final_strategy,
-                "solver": final_strategy 
-            },
-            "full_data_cache": full_data
+            "strategies": {"accuracy": final_acc_strategy, "solver": final_solver_strategy},
+            "history": history_log,
+            "full_data": full_data
         }
