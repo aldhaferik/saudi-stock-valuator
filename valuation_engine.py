@@ -10,10 +10,8 @@ class ValuationEngine:
     def get_latest_value(self, df, row_name):
         """Safely retrieves the most recent value for a given financial row."""
         try:
-            # Try exact match first
             if row_name in df.index:
                 return df.loc[row_name].iloc[0]
-            # Try partial match (case-insensitive)
             for idx in df.index:
                 if row_name.lower() in str(idx).lower():
                     return df.loc[idx].iloc[0]
@@ -25,7 +23,6 @@ class ValuationEngine:
         try:
             free_cash_flow = self.get_latest_value(self.cf, "Free Cash Flow")
             if free_cash_flow == 0:
-                # Fallback: Operating Cash Flow - CapEx
                 ocf = self.get_latest_value(self.cf, "Operating Cash Flow")
                 capex = abs(self.get_latest_value(self.cf, "Capital Expenditure"))
                 free_cash_flow = ocf - capex
@@ -47,7 +44,6 @@ class ValuationEngine:
             
             total_equity_value = sum(future_cash_flows) + discounted_tv
             net_debt = self.get_latest_value(self.bs, "Net Debt") 
-            # If Net Debt not found, try Total Debt - Cash
             if net_debt == 0:
                 total_debt = self.get_latest_value(self.bs, "Total Debt")
                 cash = self.get_latest_value(self.bs, "Cash And Cash Equivalents")
