@@ -13,6 +13,7 @@ st.markdown("""
     .highlight-ai { border-left: 5px solid #ff4b4b; }
     .highlight-acc { border-left: 5px solid #1f77b4; }
     .header-style { font-size: 16px; color: #555; font-weight: 600; margin-bottom: 5px; }
+    .sub-text { font-size: 12px; color: #888; margin-top: -5px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -48,16 +49,19 @@ if run_btn and stock_input:
             with c1:
                  st.markdown(f'<div class="card"><div class="header-style">Current Price</div><div class="big-metric">{latest_price:.2f} SAR</div></div>', unsafe_allow_html=True)
             
-            # 2. ROI Cards
+            # 2. ROI Cards with DATES (The Fix)
             st.subheader("📊 Trailing Returns (ROI)")
             roi_cols = st.columns(len(roi_data))
             for i, (label, metrics) in enumerate(roi_data.items()):
                 with roi_cols[i]:
                     if metrics:
                         val = metrics['roi']
+                        ref_date = metrics['ref_date'] # Get the date
                         color = "green" if val > 0 else "red"
+                        
                         st.markdown(f"**{label}**")
                         st.markdown(f"<span style='color:{color}; font-size:18px; font-weight:bold'>{val:.1%}</span>", unsafe_allow_html=True)
+                        st.markdown(f"<div class='sub-text'>since {ref_date}</div>", unsafe_allow_html=True) # Display Date
                     else:
                         st.markdown(f"**{label}**\nN/A")
 
@@ -68,7 +72,7 @@ if run_btn and stock_input:
             fig.update_layout(template="plotly_white", height=450, hovermode="x unified")
             st.plotly_chart(fig, use_container_width=True)
 
-            # 4. NEW: INSPECT MATH FOR ETF
+            # 4. INSPECT MATH TABLE
             st.markdown("###")
             with st.expander("🔍 Inspect ROI Data (Verify Dates & Prices)", expanded=False):
                 st.info("Check the exact dates used to calculate the returns above.")
