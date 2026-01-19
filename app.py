@@ -48,12 +48,13 @@ if run_btn and stock_input:
             with c1:
                  st.markdown(f'<div class="card"><div class="header-style">Current Price</div><div class="big-metric">{latest_price:.2f} SAR</div></div>', unsafe_allow_html=True)
             
-            # 2. ROI Table
+            # 2. ROI Cards
             st.subheader("📊 Trailing Returns (ROI)")
             roi_cols = st.columns(len(roi_data))
-            for i, (label, val) in enumerate(roi_data.items()):
+            for i, (label, metrics) in enumerate(roi_data.items()):
                 with roi_cols[i]:
-                    if val is not None:
+                    if metrics:
+                        val = metrics['roi']
                         color = "green" if val > 0 else "red"
                         st.markdown(f"**{label}**")
                         st.markdown(f"<span style='color:{color}; font-size:18px; font-weight:bold'>{val:.1%}</span>", unsafe_allow_html=True)
@@ -61,11 +62,28 @@ if run_btn and stock_input:
                         st.markdown(f"**{label}**\nN/A")
 
             # 3. Interactive Price Chart
-            st.subheader("📈 Price Trend (Max History)")
+            st.subheader("📈 Price Trend")
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=prices.index, y=prices['Close'], mode='lines', name='Price', line=dict(color='#1f77b4', width=2)))
             fig.update_layout(template="plotly_white", height=450, hovermode="x unified")
             st.plotly_chart(fig, use_container_width=True)
+
+            # 4. NEW: INSPECT MATH FOR ETF
+            st.markdown("###")
+            with st.expander("🔍 Inspect ROI Data (Verify Dates & Prices)", expanded=False):
+                st.info("Check the exact dates used to calculate the returns above.")
+                etf_rows = []
+                for label, metrics in roi_data.items():
+                    if metrics:
+                        etf_rows.append({
+                            "Period": label,
+                            "Reference Date": metrics['ref_date'],
+                            "Past Price": f"{metrics['ref_price']:.2f}",
+                            "Current Price": f"{latest_price:.2f}",
+                            "ROI Calculation": f"({latest_price:.2f} - {metrics['ref_price']:.2f}) / {metrics['ref_price']:.2f}"
+                        })
+                st.dataframe(pd.DataFrame(etf_rows), use_container_width=True)
+
 
         # ==========================
         # MODE 2: STOCK VIEW
@@ -124,13 +142,11 @@ if run_btn and stock_input:
             st.markdown("### 🔍 Drill Down: Inspect the Math")
             st.info("Click the tabs below to verify the logic behind the numbers.")
             
-            # --- NEW: Added 'Accuracy Logic' Tab ---
             tab_dcf, tab_pe, tab_solver, tab_acc = st.tabs(["💵 DCF Details", "📊 P/E Details", "🤖 AI Solver Logic", "🎯 Accuracy Logic"])
 
             history = result['history']
             
             with tab_dcf:
-                st.caption("How DCF performed over the last 5 years:")
                 dcf_data = []
                 for h in history:
                     dcf_data.append({
@@ -143,7 +159,6 @@ if run_btn and stock_input:
                 st.dataframe(pd.DataFrame(dcf_data), use_container_width=True)
 
             with tab_pe:
-                st.caption("How P/E performed over the last 5 years:")
                 pe_data = []
                 for h in history:
                     pe_data.append({
@@ -156,25 +171,18 @@ if run_btn and stock_input:
                 st.dataframe(pd.DataFrame(pe_data), use_container_width=True)
 
             with tab_solver:
-                st.caption("Why the AI Solver chose these weights (Minimizing Error):")
                 rows = []
                 for m in ["DCF", "PE", "PB", "EV"]:
                     rows.append({
                         "Method": m,
-                        "Avg Historical Accuracy": f"{result['strategies']['accuracy'][m]['accuracy']:.1%}",
-                        "AI Final Weight": f"{result['strategies']['solver'][m]['weight']:.1%}",
+                        "Avg Accuracy": f"{result['strategies']['accuracy'][m]['accuracy']:.1%}",
+                        "AI Weight": f"{result['strategies']['solver'][m]['weight']:.1%}",
                     })
                 st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
             with tab_acc:
-                st.caption("Why the Accuracy Model chose these weights (Year-by-Year Scorecard):")
-                
-                # Build a detailed scorecard
                 acc_breakdown = []
-                method_names = ["DCF", "PE", "PB", "EV"]
-                
-                for m in method_names:
-                    # Calculate accuracy for each year for this method
+                for m in ["DCF", "PE", "PB", "EV"]:
                     yearly_accs = []
                     for h in history:
                         pred = h['predictions'][m]
@@ -185,19 +193,11 @@ if run_btn and stock_input:
                         else:
                             yearly_accs.append("0%")
                     
-                    row = {
-                        "Method": m,
-                        "Avg Accuracy": f"{result['strategies']['accuracy'][m]['accuracy']:.1%}",
-                        "Final Weight": f"{result['strategies']['accuracy'][m]['weight']:.1%}",
-                    }
-                    # Add yearly columns dynamically
+                    row = {"Method": m, "Avg Accuracy": f"{result['strategies']['accuracy'][m]['accuracy']:.1%}"}
                     for i, yr_acc in enumerate(yearly_accs):
                         row[f"Yr {i+1}"] = yr_acc
-                        
                     acc_breakdown.append(row)
-                
                 st.dataframe(pd.DataFrame(acc_breakdown), use_container_width=True)
-                st.caption("*Yr 1 is 5 years ago, Yr 5 is last year. '0%' usually means the model failed or predicted negative value.*")
 
             # --- CHARTS ---
             st.markdown("###")
