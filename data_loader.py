@@ -33,6 +33,11 @@ class SaudiStockLoader:
         # Fetch max history for trends
         prices = ticker.history(period="10y") 
         if prices.empty: return None
+
+        # --- CRITICAL FIX: STRIP TIMEZONE AT SOURCE ---
+        # This ensures the entire app works with simple dates, preventing TypeErrors
+        if prices.index.tz is not None:
+            prices.index = prices.index.tz_localize(None)
         
         # --- ETF DETECTION LOGIC ---
         # Check 1: Explicit Quote Type
@@ -67,13 +72,13 @@ class SaudiStockLoader:
         }
 
     def get_data_as_of_date(self, stock_data, valuation_date_str):
-        # If it's an ETF, we don't need to slice financials for backtesting
         if stock_data.get("is_etf", False):
             return None 
 
-        cutoff_date = pd.to_datetime(valuation_date_str).tz_localize(None)
+        cutoff_date = pd.to_datetime(valuation_date_str) # Already naive coming from string
         
         prices = stock_data["prices"].copy()
+        # Double check just in case
         if prices.index.tz is not None:
              prices.index = prices.index.tz_localize(None)
              
