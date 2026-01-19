@@ -15,15 +15,23 @@ class ValuationOptimizer:
         if not full_data:
             return {"error": "Could not retrieve data. Symbol might be invalid."}
             
-        prices = full_data['prices']
+        prices = full_data['prices'].copy() # Work on a copy to be safe
         if prices.empty:
             return {"error": "No price history found."}
-            
+
+        # --- "NUCLEAR" TIMEZONE FIX ---
+        # We strip the timezone from the entire index immediately.
+        # This makes the dates "naive" (e.g. 2026-01-20) so they can be compared freely.
+        if prices.index.tz is not None:
+            prices.index = prices.index.tz_localize(None)
+        
+        # Also ensure the dataframe in full_data is updated
+        full_data['prices'] = prices
+
         # --- PATH A: ETF HANDLING ---
         if full_data.get('is_etf', False):
-            # Calculate Trailing ROI with DETAILS
             latest_price = prices['Close'].iloc[-1]
-            latest_date = prices.index[-1]
+            latest_date = prices.index[-1] # This is now guaranteed to be timezone-naive
             
             roi_metrics = {}
             periods = {
@@ -32,8 +40,14 @@ class ValuationOptimizer:
             }
             
             for label, days in periods.items():
+                # Calculate target date
                 target_date = latest_date - timedelta(days=days)
-                # Comparison is now safe because prices.index is forced naive in data_loader
+                
+                # Double-check safety: ensure target_date is also naive
+                if hasattr(target_date, 'tzinfo') and target_date.tzinfo is not None:
+                    target_date = target_date.replace(tzinfo=None)
+
+                # SAFE COMPARISON
                 past_slice = prices[prices.index <= target_date]
                 
                 if not past_slice.empty:
@@ -77,6 +91,7 @@ class ValuationOptimizer:
             sim_data = self.loader.get_data_as_of_date(full_data, test_date_str)
             if not sim_data or sim_data['financials']['balance_sheet'].empty: continue 
             
+            # Use the cleaned prices
             prices_copy = full_data['prices'].copy()
             future_prices = prices_copy[prices_copy.index >= pd.to_datetime(target_date_str)]
             
