@@ -1,66 +1,85 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import requests
-
-# --- STEALTH CONFIGURATION ---
-# We use a custom session to trick Yahoo into thinking we are a real browser.
-def get_yfinance_session():
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
-    })
-    return session
 
 class SaudiStockLoader:
     def __init__(self):
         self.suffix = ".SR"
 
     def fetch_full_data(self, stock_code):
-        # 1. Try Yahoo Finance with Stealth Session
-        try:
-            data = self._try_yahoo(stock_code)
-            if data: return data
-        except Exception as e: 
-            print(f"   ❌ Yahoo Error: {e}")
-            pass
-            
-        # If we reach here, absolutely no data was found
+        # Clean input (remove existing suffix to be safe)
+        base_code = str(stock_code).replace(".SR", "").replace(".SA", "")
+        
+        # --- ATTEMPT 1: Standard .SR Suffix (Bulk Download Method) ---
+        symbol_sr = f"{base_code}.SR"
+        print(f"🕵️‍♂️ Trying {symbol_sr} via yf.download...")
+        data = self._fetch_via_download(symbol_sr)
+        if data: return data
+
+        # --- ATTEMPT 2: Alternative .SA Suffix (Rare fallback) ---
+        symbol_sa = f"{base_code}.SA"
+        print(f"🕵️‍♂️ Trying {symbol_sa} via yf.download...")
+        data = self._fetch_via_download(symbol_sa)
+        if data: return data
+        
+        # --- ATTEMPT 3: Ticker Object Method (Last Resort) ---
+        print(f"🕵️‍♂️ Trying {symbol_sr} via Ticker object...")
+        data = self._fetch_via_ticker(symbol_sr)
+        if data: return data
+
         return None
 
-    def _try_yahoo(self, stock_code):
-        # Ensure correct suffix
-        clean_code = f"{stock_code}{self.suffix}" if not str(stock_code).endswith(self.suffix) else stock_code
-        
-        # USE THE STEALTH SESSION
-        session = get_yfinance_session()
-        ticker = yf.Ticker(clean_code, session=session)
-        
-        # Fetch max history
-        # Note: If this returns empty, Yahoo is blocking or symbol is wrong.
-        prices = ticker.history(period="10y") 
-        
-        if prices.empty: 
-            print(f"   ⚠️ Yahoo returned empty data for {clean_code}")
+    def _fetch_via_download(self, symbol):
+        try:
+            # yf.download is often more robust against blocking than Ticker
+            df = yf.download(symbol, period="10y", progress=False)
+            
+            if df.empty: return None
+            
+            # CLEANUP: yf.download returns MultiIndex columns sometimes. Flatten them.
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            
+            # Get Ticker object just for metadata (fast)
+            ticker = yf.Ticker(symbol)
+            
+            return self._package_data(ticker.info, df, ticker.balance_sheet, ticker.income_stmt, ticker.cashflow)
+        except Exception as e:
+            print(f"   ❌ Download Error: {e}")
             return None
 
-        # --- CRITICAL: STRIP TIMEZONE ---
+    def _fetch_via_ticker(self, symbol):
+        try:
+            ticker = yf.Ticker(symbol)
+            prices = ticker.history(period="10y")
+            if prices.empty: return None
+            return self._package_data(ticker.info, prices, ticker.balance_sheet, ticker.income_stmt, ticker.cashflow)
+        except Exception as e:
+            print(f"   ❌ Ticker Error: {e}")
+            return None
+
+    def _package_data(self, meta, prices, bs, is_, cf):
+        # 1. Timezone Strip (Critical Fix)
         if prices.index.tz is not None:
             prices.index = prices.index.tz_localize(None)
-        
-        # --- ETF DETECTION ---
-        q_type = ticker.info.get('quoteType', '').upper()
-        no_financials = ticker.balance_sheet.empty
+
+        # 2. ETF Detection
+        # Check QuoteType OR missing financials
+        q_type = meta.get('quoteType', '').upper()
+        # Some ETFs return empty dict for info, so check balance sheet too
+        no_financials = bs.empty if bs is not None else True
         
         is_etf = (q_type == 'ETF') or (q_type == 'MUTUALFUND') or (no_financials)
 
-        return self._package_data(ticker.info, prices, ticker.balance_sheet, ticker.income_stmt, ticker.cashflow, is_etf)
-
-    def _package_data(self, meta, prices, bs, is_, cf, is_etf):
         def sanitize(df):
-            if df.empty: return df
-            df.columns = pd.to_datetime(df.columns).tz_localize(None)
+            if df is None or df.empty: return df
+            # Convert columns to datetime and strip timezone
+            try:
+                df.columns = pd.to_datetime(df.columns)
+                if df.columns.tz is not None:
+                    df.columns = df.columns.tz_localize(None)
+            except:
+                pass # Keep original columns if they aren't dates
             return df
         
         return {
@@ -75,22 +94,23 @@ class SaudiStockLoader:
         }
 
     def get_data_as_of_date(self, stock_data, valuation_date_str):
-        if stock_data.get("is_etf", False):
-            return None 
+        if stock_data.get("is_etf", False): return None 
 
         cutoff_date = pd.to_datetime(valuation_date_str)
         
         prices = stock_data["prices"].copy()
-        if prices.index.tz is not None:
-             prices.index = prices.index.tz_localize(None)
-             
         past_prices = prices[prices.index < cutoff_date]
+        
         if past_prices.empty: return None
         simulated_current_price = past_prices['Close'].iloc[-1]
 
         def filter_financials(df):
             if df is None or df.empty: return df
-            valid_cols = [c for c in df.columns if c < cutoff_date]
+            # Filter columns that are dates
+            valid_cols = []
+            for c in df.columns:
+                if isinstance(c, pd.Timestamp) and c < cutoff_date:
+                    valid_cols.append(c)
             return df[valid_cols]
 
         past_financials = {
