@@ -1,76 +1,98 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import requests
+import time
+import random
 
 class SaudiStockLoader:
     def __init__(self):
         self.suffix = ".SR"
 
+    def _get_session(self):
+        # Randomize User-Agent to prevent blocking
+        user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
+        ]
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": random.choice(user_agents),
+            "Accept": "*/*",
+            "Accept-Encoding": "gzip, deflate, br"
+        })
+        return session
+
     def fetch_full_data(self, stock_code):
-        # Clean input (remove existing suffix to be safe)
-        base_code = str(stock_code).replace(".SR", "").replace(".SA", "")
+        # Clean input
+        base_code = str(stock_code).replace(".SR", "").replace(".SA", "").strip()
         
-        # --- ATTEMPT 1: Standard .SR Suffix (Bulk Download Method) ---
-        symbol_sr = f"{base_code}.SR"
-        print(f"🕵️‍♂️ Trying {symbol_sr} via yf.download...")
-        data = self._fetch_via_download(symbol_sr)
-        if data: return data
-
-        # --- ATTEMPT 2: Alternative .SA Suffix (Rare fallback) ---
-        symbol_sa = f"{base_code}.SA"
-        print(f"🕵️‍♂️ Trying {symbol_sa} via yf.download...")
-        data = self._fetch_via_download(symbol_sa)
-        if data: return data
+        # Suffixes to try (Preferred first)
+        symbols_to_try = [f"{base_code}.SR", f"{base_code}.SA"]
         
-        # --- ATTEMPT 3: Ticker Object Method (Last Resort) ---
-        print(f"🕵️‍♂️ Trying {symbol_sr} via Ticker object...")
-        data = self._fetch_via_ticker(symbol_sr)
-        if data: return data
-
+        for symbol in symbols_to_try:
+            # Retry loop (Try 2 times per symbol)
+            for attempt in range(2):
+                try:
+                    data = self._fetch_single_symbol(symbol)
+                    if data: return data
+                    # If failed but no error raised, try next attempt
+                    time.sleep(1) # Wait 1s before retry
+                except Exception as e:
+                    print(f"⚠️ Attempt {attempt+1} failed for {symbol}: {e}")
+                    time.sleep(1)
+        
         return None
 
-    def _fetch_via_download(self, symbol):
-        try:
-            # yf.download is often more robust against blocking than Ticker
-            df = yf.download(symbol, period="10y", progress=False)
-            
-            if df.empty: return None
-            
-            # CLEANUP: yf.download returns MultiIndex columns sometimes. Flatten them.
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            
-            # Get Ticker object just for metadata (fast)
-            ticker = yf.Ticker(symbol)
-            
-            return self._package_data(ticker.info, df, ticker.balance_sheet, ticker.income_stmt, ticker.cashflow)
-        except Exception as e:
-            print(f"   ❌ Download Error: {e}")
+    def _fetch_single_symbol(self, symbol):
+        session = self._get_session()
+        ticker = yf.Ticker(symbol, session=session)
+        
+        # 1. Fetch History (Fastest check)
+        # Note: 'max' can be heavy, '10y' is safer.
+        prices = ticker.history(period="10y")
+        
+        if prices.empty:
             return None
 
-    def _fetch_via_ticker(self, symbol):
+        # 2. Fetch Metadata
+        # We wrap this in try/except because sometimes info fails even if prices work
         try:
-            ticker = yf.Ticker(symbol)
-            prices = ticker.history(period="10y")
-            if prices.empty: return None
-            return self._package_data(ticker.info, prices, ticker.balance_sheet, ticker.income_stmt, ticker.cashflow)
-        except Exception as e:
-            print(f"   ❌ Ticker Error: {e}")
-            return None
+            info = ticker.info
+        except:
+            info = {}
 
-    def _package_data(self, meta, prices, bs, is_, cf):
-        # 1. Timezone Strip (Critical Fix)
+        # 3. Clean Timezone (Crucial Fix)
         if prices.index.tz is not None:
             prices.index = prices.index.tz_localize(None)
 
-        # 2. ETF Detection
-        # Check QuoteType OR missing financials
-        q_type = meta.get('quoteType', '').upper()
-        # Some ETFs return empty dict for info, so check balance sheet too
-        no_financials = bs.empty if bs is not None else True
-        
+        # 4. ETF Detection
+        q_type = info.get('quoteType', '').upper()
+        # Some ETFs have empty 'balance_sheet', use that as backup signal
+        try:
+            bs = ticker.balance_sheet
+            no_financials = bs.empty if bs is not None else True
+        except:
+            bs = pd.DataFrame()
+            no_financials = True
+
         is_etf = (q_type == 'ETF') or (q_type == 'MUTUALFUND') or (no_financials)
 
+        # 5. Fetch Financials (Only if not ETF)
+        is_stmt = pd.DataFrame()
+        cf = pd.DataFrame()
+        
+        if not is_etf:
+            try:
+                is_stmt = ticker.income_stmt
+                cf = ticker.cashflow
+            except:
+                pass
+
+        return self._package_data(info, prices, bs, is_stmt, cf, is_etf)
+
+    def _package_data(self, meta, prices, bs, is_, cf, is_etf):
         def sanitize(df):
             if df is None or df.empty: return df
             # Convert columns to datetime and strip timezone
@@ -79,7 +101,7 @@ class SaudiStockLoader:
                 if df.columns.tz is not None:
                     df.columns = df.columns.tz_localize(None)
             except:
-                pass # Keep original columns if they aren't dates
+                pass 
             return df
         
         return {
@@ -99,6 +121,10 @@ class SaudiStockLoader:
         cutoff_date = pd.to_datetime(valuation_date_str)
         
         prices = stock_data["prices"].copy()
+        # Safety check for timezone
+        if prices.index.tz is not None:
+             prices.index = prices.index.tz_localize(None)
+             
         past_prices = prices[prices.index < cutoff_date]
         
         if past_prices.empty: return None
@@ -106,11 +132,12 @@ class SaudiStockLoader:
 
         def filter_financials(df):
             if df is None or df.empty: return df
-            # Filter columns that are dates
             valid_cols = []
             for c in df.columns:
-                if isinstance(c, pd.Timestamp) and c < cutoff_date:
-                    valid_cols.append(c)
+                # Ensure column is a timestamp before comparing
+                if isinstance(c, pd.Timestamp):
+                    if c.tz is not None: c = c.tz_localize(None)
+                    if c < cutoff_date: valid_cols.append(c)
             return df[valid_cols]
 
         past_financials = {
