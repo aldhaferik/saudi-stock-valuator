@@ -18,11 +18,6 @@ class ValuationOptimizer:
         prices = full_data['prices']
         if prices.empty:
             return {"error": "No price history found."}
-
-        # --- FIX: STRIP TIMEZONE IMMEDIATELY ---
-        if prices.index.tz is not None:
-            prices.index = prices.index.tz_localize(None)
-            full_data['prices'] = prices 
             
         # --- PATH A: ETF HANDLING ---
         if full_data.get('is_etf', False):
@@ -38,7 +33,7 @@ class ValuationOptimizer:
             
             for label, days in periods.items():
                 target_date = latest_date - timedelta(days=days)
-                # Find nearest date in history (on or before target)
+                # Comparison is now safe because prices.index is forced naive in data_loader
                 past_slice = prices[prices.index <= target_date]
                 
                 if not past_slice.empty:
@@ -46,7 +41,6 @@ class ValuationOptimizer:
                     past_date = past_slice.index[-1]
                     roi = ((latest_price - past_price) / past_price)
                     
-                    # Store detailed info for the frontend
                     roi_metrics[label] = {
                         "roi": roi,
                         "ref_date": past_date.strftime('%Y-%m-%d'),
