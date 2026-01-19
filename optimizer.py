@@ -19,6 +19,12 @@ class ValuationOptimizer:
         if prices.empty:
             return {"error": "No price history found."}
 
+        # --- CRITICAL FIX: STRIP TIMEZONE IMMEDIATELY ---
+        # This prevents the "Invalid comparison" error by making everything timezone-naive
+        if prices.index.tz is not None:
+            prices.index = prices.index.tz_localize(None)
+            full_data['prices'] = prices # Update the main data object
+            
         # --- PATH A: ETF HANDLING ---
         if full_data.get('is_etf', False):
             # Calculate Trailing ROI
@@ -31,9 +37,6 @@ class ValuationOptimizer:
                 "6 Months": 180, "1 Year": 365, "2 Years": 730, "5 Years": 1825
             }
             
-            # Ensure index is timezone naive for comparison
-            if prices.index.tz is not None: prices.index = prices.index.tz_localize(None)
-
             for label, days in periods.items():
                 target_date = latest_date - timedelta(days=days)
                 # Find nearest date in history
@@ -73,11 +76,10 @@ class ValuationOptimizer:
             sim_data = self.loader.get_data_as_of_date(full_data, test_date_str)
             if not sim_data or sim_data['financials']['balance_sheet'].empty: continue 
             
-            # Fix timezone for price slicing
-            prices = full_data['prices'].copy()
-            if prices.index.tz is not None: prices.index = prices.index.tz_localize(None)
+            # Use the already cleaned prices
+            prices_copy = full_data['prices'].copy()
             
-            future_prices = prices[prices.index >= pd.to_datetime(target_date_str)]
+            future_prices = prices_copy[prices_copy.index >= pd.to_datetime(target_date_str)]
             if future_prices.empty: continue 
             actual_future_price = future_prices['Close'].iloc[0]
 
@@ -109,7 +111,7 @@ class ValuationOptimizer:
         if not history_log:
             return {"error": "Not enough historical data for backtesting."}
 
-        # --- CALCULATE STRATEGIES (Same as before) ---
+        # --- CALCULATE STRATEGIES ---
         method_names = ["DCF", "PE", "PB", "EV"]
         acc_scores = {name: [] for name in method_names}
         
