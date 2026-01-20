@@ -1,35 +1,71 @@
-# File: api.py
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from optimizer import ValuationOptimizer
 import uvicorn
 import os
+import sys
+import traceback
+import numpy as np  # Added to detect numpy types
 
 app = FastAPI()
 
-# 1. Define the Input Format (What the iPhone sends)
 class StockRequest(BaseModel):
     ticker: str
 
-# 2. Define the Endpoint
+# --- THE SANITIZER FUNCTION ---
+# This converts all NumPy types (which break JSON) into standard Python types
+def convert_numpy(obj):
+    if isinstance(obj, dict):
+        return {k: convert_numpy(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy(i) for i in obj]
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return convert_numpy(obj.tolist())
+    else:
+        return obj
+
+@app.get("/")
+def home():
+    return {"status": "Alive", "message": "Send POST request to /analyze with ticker"}
+
 @app.post("/analyze")
 def analyze_stock(request: StockRequest):
+    print(f"📥 Received request for ticker: {request.ticker}")
+    
     try:
-        # Initialize your existing logic
+        # 1. Initialize Optimizer
         optimizer = ValuationOptimizer()
         
-        # Run the same math you used in Streamlit
-        result = optimizer.find_optimal_strategy(request.ticker)
+        # 2. Run Strategy
+        print(f"   -> Running find_optimal_strategy for {request.ticker}...")
+        raw_result = optimizer.find_optimal_strategy(request.ticker)
         
-        if "error" in result:
-            raise HTTPException(status_code=400, detail=result['error'])
+        # 3. Check for internal errors
+        if "error" in raw_result:
+            print(f"   ⚠️ Optimizer returned error: {raw_result['error']}")
+            return raw_result
             
-        # Return the raw data (The iPhone will design the charts)
-        return result
+        # 4. SANITIZE THE DATA (Crucial Fix)
+        # We wrap the result in our cleaner function before returning
+        clean_result = convert_numpy(raw_result)
+        
+        print("   ✅ Success! Data sanitized and returning.")
+        return clean_result
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Capture the FULL error traceback
+        error_msg = str(e)
+        tb = traceback.format_exc()
+        
+        print(f"🔥 CRITICAL SERVER CRASH: {error_msg}")
+        print(tb)
+        
+        raise HTTPException(status_code=500, detail=f"Server Crash: {error_msg}")
 
-# 3. Entry point for the server
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
