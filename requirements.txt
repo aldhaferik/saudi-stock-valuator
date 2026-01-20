@@ -1,10 +1,13 @@
-streamlit
+pandas
+numpy
+plotly
+selenium
+webdriver-manager
+fastapi
+uvicorn
 pandas
 numpy
 scipy
 yfinance>=0.2.40
-plotly
 requests
 lxml
-selenium
-webdriver-manager
