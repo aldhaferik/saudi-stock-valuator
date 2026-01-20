@@ -14,84 +14,91 @@ app = FastAPI()
 class StockRequest(BaseModel):
     ticker: str
 
-# --- THE NAN-PROOF CLEANER ---
+# --- DATA CLEANER (Keeps JSON Safe) ---
 def clean_for_json(obj):
-    # 1. Handle Pandas DataFrames & Series
-    # We convert them to dicts, then RECURSE to clean the contents (catch NaNs)
     if isinstance(obj, pd.DataFrame):
         df = obj.copy()
-        # Ensure dates in index are strings
         if isinstance(df.index, pd.DatetimeIndex):
             df.index = df.index.strftime('%Y-%m-%d')
-        return clean_for_json(df.to_dict()) # <--- Recurse here!
-        
+        return clean_for_json(df.to_dict())
     if isinstance(obj, pd.Series):
-        return clean_for_json(obj.to_dict()) # <--- Recurse here!
-
-    # 2. Handle NumPy Integers/Floats
+        return clean_for_json(obj.to_dict())
     if isinstance(obj, (np.integer, np.int64, np.int32)):
         return int(obj)
     if isinstance(obj, (np.floating, np.float64, np.float32)):
         val = float(obj)
-        if math.isnan(val) or math.isinf(val):
-            return None
+        if math.isnan(val) or math.isinf(val): return None
         return val
-        
-    # 3. Handle NumPy Arrays
     if isinstance(obj, np.ndarray):
         return clean_for_json(obj.tolist())
-        
-    # 4. Handle Lists and Dicts (Recursion)
     if isinstance(obj, dict):
         return {k: clean_for_json(v) for k, v in obj.items()}
     if isinstance(obj, list):
         return [clean_for_json(i) for i in obj]
-        
-    # 5. Handle Standalone NaNs / Infinities (The Crash Fix)
     if isinstance(obj, float):
-        if math.isnan(obj) or math.isinf(obj):
-            return None
-            
-    # Handle Pandas NA/Null types
-    if pd.isna(obj):
-        return None
-        
+        if math.isnan(obj) or math.isinf(obj): return None
+    if pd.isna(obj): return None
     return obj
-
-@app.get("/")
-def home():
-    return {"status": "Alive", "message": "Send POST request to /analyze with ticker"}
 
 @app.post("/analyze")
 def analyze_stock(request: StockRequest):
-    print(f"📥 Received request for ticker: {request.ticker}")
-    
     try:
-        # 1. Initialize Optimizer
         optimizer = ValuationOptimizer()
-        
-        # 2. Run Strategy
-        print(f"   -> Running find_optimal_strategy for {request.ticker}...")
         raw_result = optimizer.find_optimal_strategy(request.ticker)
         
-        # 3. Check for internal errors
         if "error" in raw_result:
-            print(f"   ⚠️ Optimizer returned error: {raw_result['error']}")
             return raw_result
             
-        # 4. DEEP CLEAN & SANITIZE
-        print("   -> Sanitizing data (Removing NaNs/NumPy types)...")
-        clean_result = clean_for_json(raw_result)
+        data = clean_for_json(raw_result)
         
-        print("   ✅ Success! Data sanitized and returning.")
-        return clean_result
+        # --- NEW: CALCULATE VERDICT & NAME ---
+        # 1. Get Company Name
+        meta = data.get("full_data", {}).get("meta", {})
+        # Try different fields where the name might hide
+        name = meta.get("shortName") or meta.get("longName") or meta.get("address1") or request.ticker
+        
+        # 2. Calculate Fair Value
+        # We take the weights (AI Strategy) and the latest predictions
+        strategies = data.get("strategies", {}).get("solver", {})
+        history = data.get("history", [])
+        
+        fair_value = 0.0
+        current_price = meta.get("currentPrice", 0.0)
+        
+        if history and strategies:
+            latest_predictions = history[-1].get("predictions", {})
+            
+            # Sum up: (Weight * Prediction) for each model
+            for model, detail in strategies.items():
+                weight = detail.get("weight", 0.0)
+                pred_price = latest_predictions.get(model, 0.0)
+                if pred_price:
+                    fair_value += weight * pred_price
+        
+        # 3. Determine Verdict
+        upside = 0.0
+        verdict = "Neutral"
+        if current_price > 0 and fair_value > 0:
+            upside = ((fair_value - current_price) / current_price) * 100
+            if upside >= 5: verdict = "Undervalued"
+            elif upside <= -5: verdict = "Overvalued"
+            else: verdict = "Fairly Valued"
+
+        # 4. Inject into response
+        data["valuation_summary"] = {
+            "company_name": name,
+            "fair_value": fair_value,
+            "current_price": current_price,
+            "verdict": verdict,
+            "upside_percent": upside
+        }
+        
+        return data
         
     except Exception as e:
         error_msg = str(e)
-        tb = traceback.format_exc()
-        print(f"🔥 CRITICAL SERVER CRASH: {error_msg}")
-        print(tb)
-        raise HTTPException(status_code=500, detail=f"Server Crash: {error_msg}")
+        print(f"CRITICAL ERROR: {error_msg}")
+        raise HTTPException(status_code=500, detail=error_msg)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
