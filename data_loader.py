@@ -1,41 +1,30 @@
-import streamlit as st
 import yfinance as yf
 import pandas as pd
-import requests
 import random
+from functools import lru_cache
 
-# --- 1. STANDALONE CACHED FETCHER ---
-# We define this OUTSIDE the class so Streamlit's caching system works perfectly.
-@st.cache_data(ttl=3600, show_spinner=False)
+# --- 1. PYTHON-NATIVE CACHING (No Streamlit) ---
+# maxsize=128 means it remembers the last 128 stocks requested.
+@lru_cache(maxsize=128)
 def fetch_yahoo_data_cached(symbol):
-    # Rotate User Agents to avoid "403 Forbidden" blocks
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0"
-    ]
-    
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": random.choice(user_agents),
-        "Accept": "*/*",
-        "Connection": "keep-alive"
-    })
-    
     try:
-        # Attempt 1: Ticker Object
-        ticker = yf.Ticker(symbol, session=session)
-        # auto_adjust=True gives the most accurate historical price
+        # Create a Ticker object
+        # We rely on yfinance's internal robust logic (no custom session)
+        ticker = yf.Ticker(symbol)
+        
+        # Fetch History (10 years)
+        # auto_adjust=True fixes weird split/dividend issues
         prices = ticker.history(period="10y", auto_adjust=True)
         
-        # Attempt 2: Direct Download (Fallback if Ticker fails)
         if prices.empty:
-            prices = yf.download(symbol, period="10y", session=session, progress=False, auto_adjust=True)
+            # Fallback: Try downloading via the download method
+            prices = yf.download(symbol, period="10y", progress=False, auto_adjust=True)
             
         if prices.empty:
+            print(f"❌ No price data found for {symbol}")
             return None
             
-        # Try fetching metadata (often flaky, so we wrap in try/except)
+        # Try fetching metadata
         try:
             info = ticker.info
         except:
@@ -48,7 +37,8 @@ def fetch_yahoo_data_cached(symbol):
             "is_": ticker.income_stmt,
             "cf": ticker.cashflow
         }
-    except Exception:
+    except Exception as e:
+        print(f"❌ Error fetching {symbol}: {e}")
         return None
 
 class SaudiStockLoader:
@@ -56,23 +46,25 @@ class SaudiStockLoader:
         self.suffix = ".SR"
 
     def fetch_full_data(self, stock_code):
-        # Clean Input (remove any existing suffix)
+        # Clean Input
         base_code = str(stock_code).replace(".SR", "").replace(".SA", "").strip()
         
         # Try Primary Suffix (.SR)
+        print(f"🔍 Fetching {base_code}.SR...")
         data = fetch_yahoo_data_cached(f"{base_code}.SR")
         
         # Try Secondary Suffix (.SA) if primary failed
         if not data:
+            print(f"⚠️ Failed. Retrying with {base_code}.SA...")
             data = fetch_yahoo_data_cached(f"{base_code}.SA")
             
-        if not data: return None
+        if not data: 
+            return None
 
         return self._package_data(data["info"], data["prices"], data["bs"], data["is_"], data["cf"])
 
     def _package_data(self, meta, prices, bs, is_, cf):
-        # 1. NUCLEAR TIMEZONE FIX (The Source of All Evil)
-        # We strip the timezone immediately so no math errors occur later
+        # 1. NUCLEAR TIMEZONE FIX
         if prices.index.tz is not None:
             prices.index = prices.index.tz_localize(None)
 
@@ -109,13 +101,11 @@ class SaudiStockLoader:
         }
 
     def get_data_as_of_date(self, stock_data, valuation_date_str):
-        # Skip for ETFs
         if stock_data.get("is_etf", False): return None 
 
         cutoff_date = pd.to_datetime(valuation_date_str)
         
         prices = stock_data["prices"].copy()
-        # Double Safety on Timezone
         if prices.index.tz is not None:
              prices.index = prices.index.tz_localize(None)
              
