@@ -11,10 +11,9 @@ app = FastAPI()
 
 # --- THE VIP LIST ---
 # Add any codes you want here.
-VALID_CODES = {
-    "KHALED-VIP": "Owner",
-    "SAUDI-2030": "Early Access",
-    "TEST-123": "Tester"
+ALID_CODES = {
+    "NEW-PASSWORD-HERE": "VIP User",
+    "FAMILY-ONLY": "Guest"
 }
 
 class StockRequest(BaseModel):
