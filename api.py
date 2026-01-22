@@ -3,18 +3,25 @@ from pydantic import BaseModel
 from optimizer import ValuationOptimizer
 import uvicorn
 import os
-import sys
-import traceback
+import math
 import numpy as np
 import pandas as pd
-import math
 
 app = FastAPI()
 
+# --- THE VIP LIST ---
+# Add any codes you want here.
+VALID_CODES = {
+    "KHALED-VIP": "Owner",
+    "SAUDI-2030": "Early Access",
+    "TEST-123": "Tester"
+}
+
 class StockRequest(BaseModel):
     ticker: str
+    access_code: str  # <--- New Required Field!
 
-# --- DATA CLEANER (Keeps JSON Safe) ---
+# --- DATA CLEANER ---
 def clean_for_json(obj):
     if isinstance(obj, pd.DataFrame):
         df = obj.copy()
@@ -42,6 +49,15 @@ def clean_for_json(obj):
 
 @app.post("/analyze")
 def analyze_stock(request: StockRequest):
+    # 1. CHECK THE CODE (The Bouncer)
+    if request.access_code not in VALID_CODES:
+        print(f"⛔ Intruder detected! Tried code: {request.access_code}")
+        # Return a special "403 Forbidden" error
+        raise HTTPException(status_code=403, detail="Invalid Access Code. Please contact Khaled for access.")
+
+    print(f"✅ Access Granted to: {VALID_CODES[request.access_code]}")
+    
+    # 2. PROCEED AS NORMAL
     try:
         optimizer = ValuationOptimizer()
         raw_result = optimizer.find_optimal_strategy(request.ticker)
@@ -51,31 +67,21 @@ def analyze_stock(request: StockRequest):
             
         data = clean_for_json(raw_result)
         
-        # --- NEW: CALCULATE VERDICT & NAME ---
-        # 1. Get Company Name
+        # Calculate Verdict (Same as before)
         meta = data.get("full_data", {}).get("meta", {})
-        # Try different fields where the name might hide
-        name = meta.get("shortName") or meta.get("longName") or meta.get("address1") or request.ticker
-        
-        # 2. Calculate Fair Value
-        # We take the weights (AI Strategy) and the latest predictions
+        name = meta.get("shortName") or meta.get("longName") or request.ticker
         strategies = data.get("strategies", {}).get("solver", {})
         history = data.get("history", [])
-        
         fair_value = 0.0
         current_price = meta.get("currentPrice", 0.0)
         
         if history and strategies:
-            latest_predictions = history[-1].get("predictions", {})
-            
-            # Sum up: (Weight * Prediction) for each model
+            latest_preds = history[-1].get("predictions", {})
             for model, detail in strategies.items():
-                weight = detail.get("weight", 0.0)
-                pred_price = latest_predictions.get(model, 0.0)
-                if pred_price:
-                    fair_value += weight * pred_price
+                w = detail.get("weight", 0.0)
+                p = latest_preds.get(model, 0.0)
+                if p: fair_value += w * p
         
-        # 3. Determine Verdict
         upside = 0.0
         verdict = "Neutral"
         if current_price > 0 and fair_value > 0:
@@ -84,7 +90,6 @@ def analyze_stock(request: StockRequest):
             elif upside <= -5: verdict = "Overvalued"
             else: verdict = "Fairly Valued"
 
-        # 4. Inject into response
         data["valuation_summary"] = {
             "company_name": name,
             "fair_value": fair_value,
@@ -96,9 +101,8 @@ def analyze_stock(request: StockRequest):
         return data
         
     except Exception as e:
-        error_msg = str(e)
-        print(f"CRITICAL ERROR: {error_msg}")
-        raise HTTPException(status_code=500, detail=error_msg)
+        print(f"CRITICAL ERROR: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
