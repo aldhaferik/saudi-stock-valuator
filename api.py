@@ -18,7 +18,7 @@ ALID_CODES = {
 
 class StockRequest(BaseModel):
     ticker: str
-    access_code: str  # <--- New Required Field!
+    access_code: str  
 
 # --- DATA CLEANER ---
 def clean_for_json(obj):
