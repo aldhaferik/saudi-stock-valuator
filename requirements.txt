@@ -13,3 +13,4 @@ requests
 lxml
 scikit-learn
 beautifulsoup4
+pydantic
