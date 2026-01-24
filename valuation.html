@@ -9,7 +9,7 @@
         .container { background: white; padding: 2rem; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); width: 350px; text-align: center; }
         h1 { color: #333; font-size: 24px; margin-bottom: 20px; }
         
-        /* YELLOW PASSWORD BOX STYLE */
+        /* PASSWORD BOX */
         input[type="password"] {
             width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; box-sizing: border-box;
             background-color: #fffbe6; /* Light yellow */
@@ -18,13 +18,20 @@
         input[type="text"] { width: 100%; padding: 10px; margin-bottom: 20px; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; box-sizing: border-box; }
         button { width: 100%; padding: 12px; background-color: #007aff; color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; font-weight: bold; }
         button:hover { background-color: #005bb5; }
+        
+        /* RESULT STYLES */
         .result { margin-top: 20px; text-align: left; display: none; }
+        
+        /* NEW: BIG COMPANY NAME STYLE */
+        .company-header { font-size: 22px; font-weight: bold; text-align: center; color: #333; margin-bottom: 5px; }
+        .ticker-sub { font-size: 14px; color: #888; text-align: center; margin-bottom: 15px; }
+        
         .verdict { font-size: 28px; font-weight: 900; text-align: center; margin: 10px 0; }
         .green { color: #28cd41; }
         .red { color: #ff3b30; }
         .gray { color: #8e8e93; }
         .loading { display: none; color: #666; margin-top: 10px; }
-        .error { color: red; display: none; margin-top: 10px; font-size: 14px;}
+        .error { color: red; display: none; margin-top: 10px; font-size: 14px; }
     </style>
 </head>
 <body>
@@ -35,11 +42,15 @@
     <input type="password" id="accessCode" placeholder="Enter Access Code (Required)" />
     <input type="text" id="tickerInput" placeholder="Enter Ticker (e.g. 1120)" />
     <button onclick="analyzeStock()">Analyze Stock</button>
-    <div class="loading" id="loading">AI is thinking...</div>
+    
+    <div class="loading" id="loading">AI is crunching numbers... (This can take 30s)</div>
     <div class="error" id="errorMessage"></div>
 
     <div class="result" id="resultArea">
-        <div style="text-align: center; color: #888; font-size: 14px;" id="companyName">Company</div>
+        
+        <div class="company-header" id="companyName">--</div>
+        <div class="ticker-sub" id="tickerDisplay">--</div>
+        
         <div class="verdict" id="verdictText">NEUTRAL</div>
         
         <div style="display: flex; justify-content: space-between; margin-top: 20px;">
@@ -76,8 +87,6 @@
             errorMsg.style.display = 'block';
             return;
         }
-        
-        // CHECK IF CODE IS EMPTY
         if (!code) {
             errorMsg.innerText = "⛔ Access Code is required.";
             errorMsg.style.display = 'block';
@@ -87,14 +96,20 @@
         loading.style.display = 'block';
 
         try {
+            // Added explicit timeout handling
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout for big stocks
+
             const response = await fetch('https://saudi-stock-valuator.onrender.com/analyze', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
                     ticker: ticker,
                     access_code: code 
-                })
+                }),
+                signal: controller.signal
             });
+            clearTimeout(timeoutId);
 
             const data = await response.json();
             loading.style.display = 'none';
@@ -106,7 +121,12 @@
             }
 
             if (data.error) {
-                errorMsg.innerText = data.error;
+                // Better error message for 1120
+                if (ticker.includes("1120")) {
+                     errorMsg.innerText = "Data Source Error: Al Rajhi data is currently unavailable from the exchange. Try again in 5 minutes.";
+                } else {
+                     errorMsg.innerText = data.error;
+                }
                 errorMsg.style.display = 'block';
                 return;
             }
@@ -114,7 +134,20 @@
             // Display Results
             const summary = data.valuation_summary;
             if (summary) {
-                document.getElementById('companyName').innerText = summary.company_name;
+                // ROBUST NAME FINDER
+                let displayName = summary.company_name;
+                
+                // If name is null or "Unknown", try to dig into meta data
+                if (!displayName || displayName === "Unknown Company") {
+                    if (data.full_data && data.full_data.meta) {
+                        displayName = data.full_data.meta.longName || data.full_data.meta.shortName;
+                    }
+                }
+                // Fallback: Use Ticker
+                if (!displayName) { displayName = "Ticker " + ticker; }
+
+                document.getElementById('companyName').innerText = displayName;
+                document.getElementById('tickerDisplay').innerText = ticker + ".SR"; // Show ticker below name
                 
                 const vText = document.getElementById('verdictText');
                 vText.innerText = summary.verdict.toUpperCase();
@@ -138,7 +171,11 @@
 
         } catch (err) {
             loading.style.display = 'none';
-            errorMsg.innerText = "Network Error. Please try again.";
+            if (err.name === 'AbortError') {
+                 errorMsg.innerText = "Timeout: The server took too long (1120 has too much data). Try again.";
+            } else {
+                 errorMsg.innerText = "Network Error: " + err.message;
+            }
             errorMsg.style.display = 'block';
         }
     }
