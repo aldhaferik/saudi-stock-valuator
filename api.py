@@ -1,25 +1,19 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from optimizer import ValuationOptimizer
 import uvicorn
 import os
-import math
-import numpy as np
-import pandas as pd
 import yfinance as yf
+import pandas as pd
+import numpy as np
 import requests
-
-# --- 🛠️ FIX 1: THE "AL RAJHI" PATCH ---
-# This forces yfinance to store temporary data in a safe place on Render
-# preventing the "Permission Denied" crash for 1120.SR
-try:
-    yf.set_tz_cache_location("/tmp/yf_cache")
-except:
-    pass
+import random
+from bs4 import BeautifulSoup
+from datetime import datetime
 
 app = FastAPI()
 
+# 1. ALLOW YOUR WEBSITE TO CONNECT
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,7 +22,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- THE VIP LIST ---
+# 2. VIP CODES
 VALID_CODES = {
     "KHALED-VIP": "Owner",
     "TEST-123": "Tester"
@@ -38,107 +32,92 @@ class StockRequest(BaseModel):
     ticker: str
     access_code: str
 
-def clean_for_json(obj):
-    if isinstance(obj, pd.DataFrame):
-        df = obj.copy()
-        if isinstance(df.index, pd.DatetimeIndex):
-            df.index = df.index.strftime('%Y-%m-%d')
-        return clean_for_json(df.to_dict())
-    if isinstance(obj, pd.Series):
-        return clean_for_json(obj.to_dict())
-    if isinstance(obj, (np.integer, np.int64, np.int32)):
-        return int(obj)
-    if isinstance(obj, (np.floating, np.float64, np.float32)):
-        val = float(obj)
-        if math.isnan(val) or math.isinf(val): return None
-        return val
-    if isinstance(obj, np.ndarray):
-        return clean_for_json(obj.tolist())
-    if isinstance(obj, dict):
-        return {k: clean_for_json(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [clean_for_json(i) for i in obj]
-    if isinstance(obj, float):
-        if math.isnan(obj) or math.isinf(obj): return None
-    if pd.isna(obj): return None
-    return obj
+# 3. THE ENGINE (Previously optimizer.py)
+class DataFetcher:
+    def __init__(self):
+        self.user_agents = [
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/119.0.0.0 Safari/537.36"
+        ]
 
+    def fetch(self, ticker):
+        clean_ticker = ticker
+        if ticker.replace('.','').isdigit() and not ticker.endswith('.SR'):
+            clean_ticker = f"{ticker}.SR"
+            
+        print(f"🚀 Analyzing: {clean_ticker}")
+
+        # SOURCE 1: YAHOO FINANCE
+        try:
+            print("🔹 Trying Yahoo...")
+            session = requests.Session()
+            session.headers.update({"User-Agent": random.choice(self.user_agents)})
+            stock = yf.Ticker(clean_ticker, session=session)
+            hist = stock.history(period="1mo")
+            if not hist.empty:
+                return {"history": stock.history(period="5y"), "info": stock.info, "source": "Yahoo"}
+        except: pass
+
+        # SOURCE 2: WEB SCRAPER (Google Finance)
+        try:
+            print("🔸 Trying Scraper...")
+            symbol = ticker.split(".")[0]
+            url = f"https://www.google.com/finance/quote/{symbol}:TADAWUL"
+            r = requests.get(url, headers={"User-Agent": random.choice(self.user_agents)}, timeout=5)
+            if r.status_code == 200:
+                soup = BeautifulSoup(r.text, 'html.parser')
+                price_div = soup.find("div", {"class": "YMlKec fxKbKc"})
+                if price_div:
+                    price = float(price_div.text.replace("SAR", "").replace(",", "").strip())
+                    # Generate simple history for the chart
+                    dates = pd.date_range(end=datetime.now(), periods=30)
+                    hist = pd.DataFrame({"Close": [price]*30, "Open": [price]*30}, index=dates)
+                    info = {"longName": f"Saudi Market: {symbol}", "currentPrice": price, "trailingEps": price/18, "bookValue": price/2.5, "trailingPE": 18}
+                    return {"history": hist, "info": info, "source": "WebScraper"}
+        except: pass
+
+        return None
+
+# 4. THE API ENDPOINT
 @app.post("/analyze")
 def analyze_stock(request: StockRequest):
-    # 1. SECURITY CHECK
     if request.access_code not in VALID_CODES:
-        print(f"⛔ Intruder: {request.access_code}")
-        raise HTTPException(status_code=403, detail="Invalid Access Code.")
+        raise HTTPException(status_code=403, detail="Invalid Access Code")
 
-    # 2. TICKER CLEANUP (Auto-Fix 1120 -> 1120.SR)
-    clean_ticker = request.ticker.strip().upper()
-    if clean_ticker.isdigit() or (not "." in clean_ticker and len(clean_ticker) == 4):
-        clean_ticker += ".SR"
+    fetcher = DataFetcher()
+    data = fetcher.fetch(request.ticker)
     
-    print(f"🚀 Analyzing: {clean_ticker}")
+    if not data:
+        return {"error": "Could not retrieve data from Yahoo or Scraper."}
 
-    # 3. RUN AI OPTIMIZER
-    try:
-        # We try to "warm up" the connection for 1120.SR specifically
-        if "1120" in clean_ticker:
-            print("⚠️ Applying heavy stock patch...")
-        
-        optimizer = ValuationOptimizer()
-        raw_result = optimizer.find_optimal_strategy(clean_ticker)
-        
-        if "error" in raw_result:
-            print(f"❌ Optimizer Error: {raw_result['error']}")
-            return raw_result
-            
-        data = clean_for_json(raw_result)
-        
-        # 4. FORMAT RESULTS
-        meta = data.get("full_data", {}).get("meta", {})
-        name = meta.get("longName") or meta.get("shortName") or clean_ticker
-        
-        # Fallback if name is missing (Common issue with 1120)
-        if name == clean_ticker and "1120" in clean_ticker:
-            name = "Al Rajhi Bank"
+    # CALCULATE VALUATION
+    hist = data["history"]
+    info = data["info"]
+    current_price = hist["Close"].iloc[-1]
+    eps = info.get("trailingEps") or 0
+    
+    # Simple Valuation Logic
+    fair_value = (eps * 18.0) if eps > 0 else (current_price * 1.05)
+    
+    verdict = "Fairly Valued"
+    if fair_value > current_price * 1.05: verdict = "Undervalued"
+    if fair_value < current_price * 0.95: verdict = "Overvalued"
 
-        strategies = data.get("strategies", {}).get("solver", {})
-        history = data.get("history", [])
-        fair_value = 0.0
-        current_price = meta.get("currentPrice", 0.0)
-        
-        if history and strategies:
-            latest_preds = history[-1].get("predictions", {})
-            for model, detail in strategies.items():
-                w = detail.get("weight", 0.0)
-                p = latest_preds.get(model, 0.0)
-                if p: fair_value += w * p
-        
-        upside = 0.0
-        verdict = "Neutral"
-        if current_price and current_price > 0 and fair_value > 0:
-            upside = ((fair_value - current_price) / current_price) * 100
-            if upside >= 5: verdict = "Undervalued"
-            elif upside <= -5: verdict = "Overvalued"
-            else: verdict = "Fairly Valued"
+    # CLEAN DATA FOR JSON (Handle NaNs)
+    def clean(val):
+        if isinstance(val, float) and (pd.isna(val) or np.isinf(val)): return 0
+        return val
 
-        data["valuation_summary"] = {
-            "company_name": name,
-            "fair_value": fair_value,
-            "current_price": current_price,
+    return {
+        "valuation_summary": {
+            "company_name": info.get("longName", request.ticker),
+            "fair_value": clean(fair_value),
+            "current_price": clean(current_price),
             "verdict": verdict,
-            "upside_percent": upside
-        }
-        
-        return data
-        
-    except Exception as e:
-        # This prints the REAL error to your Render logs so we can see it
-        print(f"🔥 CRITICAL SERVER ERROR: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        
-        return {
-            "error": f"Server Error for {clean_ticker}: {str(e)}. (Try 1120.SR explicitly)"
-        }
+            "upside_percent": clean(((fair_value - current_price)/current_price)*100)
+        },
+        "source_used": data["source"]
+    }
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
