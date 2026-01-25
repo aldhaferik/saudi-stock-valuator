@@ -1,151 +1,70 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Saudi Valuator AI</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f4f6f8; display: flex; justify-content: center; padding-top: 20px; }
-        .container { background: white; padding: 2rem; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); width: 350px; text-align: center; }
-        h1 { color: #333; font-size: 24px; margin-bottom: 20px; }
-        
-        input[type="password"] { width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; box-sizing: border-box; background-color: #fffbe6; }
-        input[type="text"] { width: 100%; padding: 10px; margin-bottom: 20px; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; box-sizing: border-box; }
-        button { width: 100%; padding: 12px; background-color: #007aff; color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; font-weight: bold; }
-        button:hover { background-color: #005bb5; }
-
-        /* RESULT STYLES */
-        .result { margin-top: 20px; text-align: left; display: none; border-top: 1px solid #eee; padding-top: 20px;}
-        .verdict { font-size: 28px; font-weight: 900; text-align: center; margin: 10px 0; }
-        .green { color: #28cd41; } .red { color: #ff3b30; } .gray { color: #8e8e93; }
-        
-        /* DIAGNOSTIC LOG (The Black Box) */
-        .log-box { 
-            margin-top: 30px; 
-            background: #222; 
-            color: #0f0; 
-            font-family: monospace; 
-            font-size: 12px; 
-            padding: 10px; 
-            border-radius: 6px; 
-            text-align: left; 
-            height: 150px; 
-            overflow-y: auto;
-            display: none; /* Hidden by default until clicked */
-        }
-    </style>
+    <title>DEBUG MODE</title>
 </head>
-<body>
+<body style="background: white; color: black; font-family: monospace; padding: 20px;">
 
-<div class="container">
-    <h1>🇸🇦 Saudi Valuator</h1>
+    <h2>🛠 SYSTEM DIAGNOSTIC</h2>
     
-    <input type="password" id="accessCode" placeholder="Access Code (e.g. KHALED-VIP)" />
-    <input type="text" id="tickerInput" placeholder="Ticker (e.g. 1120)" />
-    <button onclick="analyzeStock()">Analyze Stock</button>
+    <p>1. Enter Code (e.g. KHALED-VIP):</p>
+    <input type="text" id="pass" value="KHALED-VIP" style="border: 2px solid red;">
     
-    <div class="result" id="resultArea">
-        <h2 style="text-align: center; margin:0;" id="companyName">--</h2>
-        <div style="text-align: center; font-size: 14px; color: #888;" id="tickerDisplay">--</div>
-        
-        <div class="verdict" id="verdictText">NEUTRAL</div>
-        
-        <div style="display: flex; justify-content: space-between; margin-top: 20px;">
-            <div>
-                <div style="font-size: 12px; color: #888;">Current Price</div>
-                <div style="font-size: 18px; font-weight: bold;" id="currentPrice">--</div>
-            </div>
-            <div style="text-align: right;">
-                <div style="font-size: 12px; color: #888;">Fair Value</div>
-                <div style="font-size: 18px; font-weight: bold;" id="fairValue">--</div>
-            </div>
-        </div>
-        <div style="text-align: center; font-size: 11px; color: #aaa; margin-top: 15px;" id="sourceUsed">Source: --</div>
-    </div>
+    <p>2. Enter Ticker (e.g. 1120):</p>
+    <input type="text" id="tick" value="1120" style="border: 2px solid blue;">
+    
+    <br><br>
+    <button onclick="runTest()" style="padding: 10px 20px; font-size: 20px;">RUN TEST</button>
+    
+    <hr>
+    <h3>STATUS LOG:</h3>
+    <div id="log" style="background: #eee; padding: 10px; border: 1px solid #999;">Waiting...</div>
 
-    <div class="log-box" id="debugLog">System Ready.</div>
-</div>
+    <h3>RAW SERVER DATA:</h3>
+    <pre id="output" style="background: #222; color: #0f0; padding: 10px; min-height: 100px;">...</pre>
 
-<script>
-    function log(msg) {
-        const box = document.getElementById('debugLog');
-        box.style.display = 'block';
-        const time = new Date().toLocaleTimeString();
-        box.innerHTML += `<div>[${time}] ${msg}</div>`;
-        box.scrollTop = box.scrollHeight;
-    }
-
-    async function analyzeStock() {
-        const ticker = document.getElementById('tickerInput').value.trim();
-        const code = document.getElementById('accessCode').value.trim(); 
-        const resultArea = document.getElementById('resultArea');
-        
-        // Reset
-        resultArea.style.display = 'none';
-        document.getElementById('debugLog').innerHTML = ""; // Clear logs
-        
-        if (!ticker) { alert("Enter a ticker!"); return; }
-        if (!code) { alert("Enter access code!"); return; }
-
-        log("🚀 Starting Analysis...");
-        log(`Target: ${ticker} | Code: ${code}`);
-
-        try {
-            log("📡 Connecting to Server...");
-            
-            // 1. Send Request
-            const response = await fetch('https://saudi-stock-valuator.onrender.com/analyze', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    ticker: ticker,
-                    access_code: code 
-                })
-            });
-
-            log(`📥 Server Responded: ${response.status}`);
-
-            // 2. Check for Server Errors (403, 500, etc)
-            if (response.status !== 200) {
-                const errorText = await response.text();
-                log(`❌ Error: ${response.status} - ${errorText}`);
-                alert(`Server Error: ${response.status}\nCheck the black box for details.`);
-                return;
-            }
-
-            // 3. Parse Data
-            log("⚙️ Processing Data...");
-            const data = await response.json();
-            
-            if (data.error) {
-                log(`⚠️ API Error: ${data.error}`);
-                alert("API Error: " + data.error);
-                return;
-            }
-
-            log("✅ Success! displaying results...");
-
-            // 4. Update UI
-            const summary = data.valuation_summary;
-            document.getElementById('companyName').innerText = summary.company_name;
-            document.getElementById('tickerDisplay').innerText = ticker + ".SR";
-            
-            const vText = document.getElementById('verdictText');
-            vText.innerText = summary.verdict.toUpperCase();
-            vText.className = "verdict " + (summary.verdict === "Undervalued" ? "green" : (summary.verdict === "Overvalued" ? "red" : "gray"));
-            
-            document.getElementById('currentPrice').innerText = summary.current_price.toFixed(2);
-            document.getElementById('fairValue').innerText = summary.fair_value.toFixed(2);
-            document.getElementById('sourceUsed').innerText = "Source: " + (data.source_used || "Unknown");
-
-            resultArea.style.display = 'block';
-
-        } catch (err) {
-            log(`🔥 CRITICAL FAILURE: ${err.message}`);
-            alert("Network Error. Check your internet connection.");
+    <script>
+        function logger(msg) {
+            document.getElementById('log').innerHTML += "<br>" + msg;
         }
-    }
-</script>
+
+        async function runTest() {
+            const code = document.getElementById('pass').value;
+            const ticker = document.getElementById('tick').value;
+            const out = document.getElementById('output');
+            
+            out.innerText = "Loading...";
+            logger("🚀 Starting Request...");
+
+            try {
+                // 1. Send Request
+                const res = await fetch('https://saudi-stock-valuator.onrender.com/analyze', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ access_code: code, ticker: ticker })
+                });
+
+                logger("📡 Server Status: " + res.status);
+
+                if (res.status != 200) {
+                    const txt = await res.text();
+                    out.innerText = "ERROR " + res.status + ":\n" + txt;
+                    return;
+                }
+
+                // 2. Read Data
+                const data = await res.json();
+                logger("✅ Data Received!");
+                
+                // 3. Show Raw Data
+                out.innerText = JSON.stringify(data, null, 2);
+
+            } catch (err) {
+                logger("❌ NETWORK ERROR: " + err.message);
+                out.innerText = "CRASH: " + err.message;
+            }
+        }
+    </script>
 
 </body>
 </html>
