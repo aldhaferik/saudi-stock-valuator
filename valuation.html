@@ -1,70 +1,149 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>DEBUG MODE</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Saudi Valuator AI</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f4f6f8; display: flex; justify-content: center; padding-top: 40px; }
+        .container { background: white; padding: 2rem; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); width: 350px; text-align: center; }
+        h1 { color: #333; font-size: 24px; margin-bottom: 20px; }
+        
+        /* PASSWORD BOX */
+        input[type="password"] {
+            width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; box-sizing: border-box;
+            background-color: #fffbe6; /* Yellow to highlight it */
+        }
+
+        input[type="text"] { width: 100%; padding: 10px; margin-bottom: 20px; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; box-sizing: border-box; }
+        button { width: 100%; padding: 12px; background-color: #007aff; color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; font-weight: bold; }
+        button:hover { background-color: #005bb5; }
+        
+        /* RESULT STYLES */
+        .result { margin-top: 20px; text-align: left; display: none; padding-top: 15px; border-top: 1px solid #eee; }
+        
+        .company-header { font-size: 22px; font-weight: bold; text-align: center; color: #333; margin-bottom: 5px; }
+        .ticker-sub { font-size: 14px; color: #888; text-align: center; margin-bottom: 15px; }
+        
+        .verdict { font-size: 28px; font-weight: 900; text-align: center; margin: 10px 0; }
+        .green { color: #28cd41; }
+        .red { color: #ff3b30; }
+        .gray { color: #8e8e93; }
+        
+        .loading { display: none; color: #666; margin-top: 10px; }
+        .error { color: red; display: none; margin-top: 10px; font-size: 14px; background: #ffe6e6; padding: 10px; border-radius: 8px;}
+        
+        .source-tag { font-size: 10px; color: #aaa; text-align: center; margin-top: 20px; }
+    </style>
 </head>
-<body style="background: white; color: black; font-family: monospace; padding: 20px;">
+<body>
 
-    <h2>🛠 SYSTEM DIAGNOSTIC</h2>
+<div class="container">
+    <h1>🇸🇦 Saudi Valuator</h1>
     
-    <p>1. Enter Code (e.g. KHALED-VIP):</p>
-    <input type="text" id="pass" value="KHALED-VIP" style="border: 2px solid red;">
+    <input type="password" id="accessCode" placeholder="Enter Access Code (Required)" />
     
-    <p>2. Enter Ticker (e.g. 1120):</p>
-    <input type="text" id="tick" value="1120" style="border: 2px solid blue;">
+    <input type="text" id="tickerInput" placeholder="Enter Ticker (e.g. 1120)" />
+    <button onclick="analyzeStock()">Analyze Stock</button>
     
-    <br><br>
-    <button onclick="runTest()" style="padding: 10px 20px; font-size: 20px;">RUN TEST</button>
-    
-    <hr>
-    <h3>STATUS LOG:</h3>
-    <div id="log" style="background: #eee; padding: 10px; border: 1px solid #999;">Waiting...</div>
+    <div class="loading" id="loading">Connecting to Server...</div>
+    <div class="error" id="errorMessage"></div>
 
-    <h3>RAW SERVER DATA:</h3>
-    <pre id="output" style="background: #222; color: #0f0; padding: 10px; min-height: 100px;">...</pre>
+    <div class="result" id="resultArea">
+        <div class="company-header" id="companyName">--</div>
+        <div class="ticker-sub" id="tickerDisplay">--</div>
+        
+        <div class="verdict" id="verdictText">NEUTRAL</div>
+        
+        <div style="display: flex; justify-content: space-between; margin-top: 20px;">
+            <div>
+                <div style="font-size: 12px; color: #888;">Current Price</div>
+                <div style="font-size: 18px; font-weight: bold;" id="currentPrice">--</div>
+            </div>
+            <div style="text-align: right;">
+                <div style="font-size: 12px; color: #888;">Fair Value</div>
+                <div style="font-size: 18px; font-weight: bold;" id="fairValue">--</div>
+            </div>
+        </div>
+        
+        <div class="source-tag" id="sourceUsed">Source: --</div>
+    </div>
+</div>
 
-    <script>
-        function logger(msg) {
-            document.getElementById('log').innerHTML += "<br>" + msg;
+<script>
+    async function analyzeStock() {
+        const ticker = document.getElementById('tickerInput').value;
+        const code = document.getElementById('accessCode').value; 
+        const resultArea = document.getElementById('resultArea');
+        const loading = document.getElementById('loading');
+        const errorMsg = document.getElementById('errorMessage');
+
+        // Reset UI
+        resultArea.style.display = 'none';
+        errorMsg.style.display = 'none';
+        
+        if (!ticker) {
+            errorMsg.innerText = "Please enter a ticker.";
+            errorMsg.style.display = 'block';
+            return;
+        }
+        if (!code) {
+            errorMsg.innerText = "⛔ Access Code is required.";
+            errorMsg.style.display = 'block';
+            return;
         }
 
-        async function runTest() {
-            const code = document.getElementById('pass').value;
-            const ticker = document.getElementById('tick').value;
-            const out = document.getElementById('output');
+        loading.style.display = 'block';
+
+        try {
+            // --- THIS IS THE FIX ---
+            // We use the exact link format that worked for you in the browser: /test?ticker=...&code=...
+            const url = `https://saudi-stock-valuator.onrender.com/test?ticker=${ticker}&code=${code}`;
             
-            out.innerText = "Loading...";
-            logger("🚀 Starting Request...");
+            const response = await fetch(url);
+            const data = await response.json();
+            
+            loading.style.display = 'none';
 
-            try {
-                // 1. Send Request
-                const res = await fetch('https://saudi-stock-valuator.onrender.com/analyze', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ access_code: code, ticker: ticker })
-                });
-
-                logger("📡 Server Status: " + res.status);
-
-                if (res.status != 200) {
-                    const txt = await res.text();
-                    out.innerText = "ERROR " + res.status + ":\n" + txt;
-                    return;
-                }
-
-                // 2. Read Data
-                const data = await res.json();
-                logger("✅ Data Received!");
-                
-                // 3. Show Raw Data
-                out.innerText = JSON.stringify(data, null, 2);
-
-            } catch (err) {
-                logger("❌ NETWORK ERROR: " + err.message);
-                out.innerText = "CRASH: " + err.message;
+            // Check for Errors
+            if (data.error) {
+                errorMsg.innerText = "Error: " + data.error;
+                errorMsg.style.display = 'block';
+                return;
             }
+
+            // Display Results
+            if (data.valuation_summary) {
+                const summary = data.valuation_summary;
+                
+                document.getElementById('companyName').innerText = summary.company_name;
+                document.getElementById('tickerDisplay').innerText = ticker + ".SR";
+                
+                const vText = document.getElementById('verdictText');
+                vText.innerText = summary.verdict.toUpperCase();
+                
+                // Set Color
+                if (summary.verdict === "Undervalued") { vText.className = "verdict green"; }
+                else if (summary.verdict === "Overvalued") { vText.className = "verdict red"; }
+                else { vText.className = "verdict gray"; }
+                
+                document.getElementById('currentPrice').innerText = summary.current_price.toFixed(2);
+                document.getElementById('fairValue').innerText = summary.fair_value.toFixed(2);
+                document.getElementById('sourceUsed').innerText = "Source: " + (data.source_used || "Standard");
+                
+                resultArea.style.display = 'block';
+            } else {
+                errorMsg.innerText = "Server returned empty data.";
+                errorMsg.style.display = 'block';
+            }
+
+        } catch (err) {
+            loading.style.display = 'none';
+            errorMsg.innerText = "Network Error: " + err.message;
+            errorMsg.style.display = 'block';
         }
-    </script>
+    }
+</script>
 
 </body>
 </html>
