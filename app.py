@@ -102,11 +102,11 @@ class DataFetcher:
             "cashflow": cf,
         }
 
-def fetch_saudi_risk_free_from_excel(
-    self,
-    excel_path: str = "saudi_yields.xlsx",
-    maturity_col: str = "10-Year government bond yield",
-) -> float:
+    def fetch_saudi_risk_free_from_excel(
+        self,
+        excel_path: str = "saudi_yields.xlsx",
+        maturity_col: str = "10-Year government bond yield",
+    ) -> float:
     """
     Reads Saudi government bond yield from a local Excel file.
     Expects columns:
@@ -115,35 +115,35 @@ def fetch_saudi_risk_free_from_excel(
     Missing values may appear as '..'
     Returns decimal (e.g., 0.0564).
     """
-    df = pd.read_excel(excel_path)
+        df = pd.read_excel(excel_path)
 
-    if "TIME" not in df.columns:
-        raise ValueError("Excel missing required column: TIME")
-    if maturity_col not in df.columns:
-        raise ValueError(f"Excel missing required column: {maturity_col}")
+        if "TIME" not in df.columns:
+            raise ValueError("Excel missing required column: TIME")
+        if maturity_col not in df.columns:
+            raise ValueError(f"Excel missing required column: {maturity_col}")
 
     # Parse dates
-    df["TIME"] = pd.to_datetime(df["TIME"], errors="coerce")
+        df["TIME"] = pd.to_datetime(df["TIME"], errors="coerce")
 
     # Convert yield to numeric (handles '..' and other non-numeric values)
-    y = pd.to_numeric(df[maturity_col], errors="coerce")
+        y = pd.to_numeric(df[maturity_col], errors="coerce")
 
     # Keep valid rows only
-    tmp = pd.DataFrame({"TIME": df["TIME"], "Y": y}).dropna()
-    if tmp.empty:
-        raise ValueError(f"No valid numeric values found in column: {maturity_col}")
+        tmp = pd.DataFrame({"TIME": df["TIME"], "Y": y}).dropna()
+        if tmp.empty:
+            raise ValueError(f"No valid numeric values found in column: {maturity_col}")
 
     # Latest by date
-    tmp = tmp.sort_values("TIME")
-    last_y_percent = float(tmp["Y"].iloc[-1])
+        tmp = tmp.sort_values("TIME")
+        last_y_percent = float(tmp["Y"].iloc[-1])
 
-    rf = last_y_percent / 100.0  # percent -> decimal
+        rf = last_y_percent / 100.0  # percent -> decimal
 
     # sanity guard only
-    if rf <= 0 or rf > 0.50:
-        raise ValueError(f"Risk-free rate out of bounds after parsing: {rf}")
+        if rf <= 0 or rf > 0.50:
+            raise ValueError(f"Risk-free rate out of bounds after parsing: {rf}")
 
-    return rf
+        return rf
 
 
 # =========================================================
