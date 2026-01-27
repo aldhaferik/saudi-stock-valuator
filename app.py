@@ -103,7 +103,7 @@ class DataFetcher:
         return None
 
 # ==========================================
-# 2. THE DASHBOARD UI (Guaranteed Display)
+# 2. THE ULTIMATE HYBRID DASHBOARD
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
@@ -119,46 +119,71 @@ async def read_root():
             :root { --bg: #f0f2f5; --card: #ffffff; --primary: #0a192f; --accent: #007aff; --text: #333; }
             body { font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; background-color: var(--bg); margin: 0; padding: 20px; color: var(--text); }
             
-            .container { max-width: 1100px; margin: 0 auto; }
+            .container { max-width: 1200px; margin: 0 auto; }
             
             /* SEARCH */
             .search-bar { background: var(--card); padding: 15px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); display: flex; gap: 10px; margin-bottom: 25px; }
             input { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; outline: none; }
             button { padding: 12px 25px; background: var(--primary); color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; }
 
-            /* GRID LAYOUT */
-            .dashboard { display: none; grid-template-columns: 2fr 1fr; gap: 20px; }
+            /* LAYOUTS */
+            .top-section { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; margin-bottom: 20px; }
+            .bottom-section { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
             .full-width { grid-column: span 2; }
-            .card { background: var(--card); border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); position: relative; }
-            .card-title { font-size: 13px; font-weight: 700; color: #888; text-transform: uppercase; margin-bottom: 15px; letter-spacing: 0.5px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+            
+            .card { background: var(--card); border-radius: 12px; padding: 25px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); position: relative; }
+            .card-title { font-size: 13px; font-weight: 700; color: #888; text-transform: uppercase; margin-bottom: 20px; letter-spacing: 0.5px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
 
-            /* HEADERS */
-            .company-name { font-size: 26px; font-weight: 800; color: var(--primary); }
-            .big-price { font-size: 32px; font-weight: 700; color: var(--accent); }
+            /* HEADER & PRICE */
+            .header-row { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 15px; }
+            .company-name { font-size: 28px; font-weight: 800; color: var(--primary); margin: 0; line-height: 1.2; }
+            .ticker-tag { background: #eee; padding: 4px 8px; border-radius: 4px; font-family: monospace; color: #555; font-size: 14px; }
+            .big-price { font-size: 42px; font-weight: 800; color: #333; text-align: right; }
+            .price-sub { font-size: 13px; color: #888; text-align: right; margin-top: -5px; }
+
+            /* VERDICT BAR (The Big Red/Green Bar) */
+            .verdict-bar { padding: 12px; border-radius: 8px; text-align: center; font-weight: 800; text-transform: uppercase; font-size: 14px; margin-bottom: 20px; }
+            .v-red { background: #ffebee; color: #c62828; border: 1px solid #ffcdd2; }
+            .v-green { background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
+            .v-gray { background: #f5f5f5; color: #616161; border: 1px solid #e0e0e0; }
+
+            /* KEY STATS GRID */
+            .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; }
+            .stat-box { background: #f8f9fa; padding: 12px; border-radius: 8px; }
+            .stat-label { font-size: 11px; font-weight: 700; color: #888; text-transform: uppercase; margin-bottom: 5px; }
+            .stat-val { font-size: 16px; font-weight: 600; color: #333; }
+
+            /* FAIR VALUE CALCULATION CARD (Right Side) */
+            .fv-header { text-align: center; margin-bottom: 20px; }
+            .fv-big { font-size: 48px; font-weight: 800; color: var(--accent); }
+            .fv-sub { font-size: 13px; color: #888; }
+            
+            .fv-row { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #f0f0f0; }
+            .fv-row:last-child { border-bottom: none; }
+            .fv-label { font-size: 14px; color: #555; }
+            .fv-num { font-weight: 700; color: #333; }
+
+            /* DATA TABLES (Backtest & Forecast) */
+            .data-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            .data-table th { text-align: left; font-size: 11px; color: #888; padding-bottom: 8px; border-bottom: 1px solid #eee; }
+            .data-table td { padding: 10px 0; font-size: 13px; font-weight: 500; border-bottom: 1px solid #f9f9f9; }
             
             /* RETURNS GRID */
-            .returns-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; text-align: center; margin-top: 10px; }
+            .returns-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; text-align: center; }
             .ret-box { background: #f8f9fa; padding: 8px; border-radius: 6px; }
             .ret-label { font-size: 11px; color: #666; margin-bottom: 4px; font-weight: bold; }
             .ret-val { font-size: 14px; font-weight: 600; }
             .pos { color: #28cd41; } .neg { color: #ff3b30; }
-
-            /* TABLE STYLES */
-            .data-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-            .data-table th { text-align: left; font-size: 11px; color: #888; padding-bottom: 8px; border-bottom: 1px solid #eee; }
-            .data-table td { padding: 8px 0; font-size: 13px; font-weight: 500; border-bottom: 1px solid #f9f9f9; }
-            
-            /* WEIGHT BARS */
-            .weight-row { display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 13px; font-weight: 600; }
-            .weight-bar { height: 8px; background: #eee; border-radius: 4px; overflow: hidden; margin-bottom: 15px; }
-            .weight-fill { height: 100%; }
 
             /* LOADING */
             .loading { text-align: center; padding: 40px; display: none; }
             .spinner { border: 4px solid #f3f3f3; border-top: 4px solid var(--accent); border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 0 auto 15px; }
             @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 
-            @media (max-width: 768px) { .dashboard { grid-template-columns: 1fr; } .full-width { grid-column: span 1; } }
+            @media (max-width: 900px) { 
+                .top-section, .bottom-section { grid-template-columns: 1fr; } 
+                .full-width { grid-column: span 1; }
+            }
         </style>
     </head>
     <body>
@@ -171,84 +196,125 @@ async def read_root():
 
         <div class="loading" id="loading">
             <div class="spinner"></div>
-            <h3>Generating 5-Year Model...</h3>
+            <h3>Generating Institutional Model...</h3>
         </div>
 
         <div id="error" style="display:none; padding: 15px; background: #ffebee; color: #c62828; border-radius: 8px; margin-bottom: 20px;"></div>
 
-        <div class="dashboard" id="dashboard">
+        <div id="dashboard" style="display:none;">
             
-            <div class="card full-width">
-                <div style="display:flex; justify-content:space-between;">
-                    <div>
-                        <div class="company-name" id="name">--</div>
-                        <div style="font-family:monospace; color:#666;" id="tickerDisplay">--</div>
-                    </div>
-                    <div style="text-align: right;">
-                        <div class="big-price" id="fair">--</div>
-                        <div style="font-size:12px; color:#888;">AI Fair Value</div>
-                    </div>
-                </div>
-                <div style="margin-top: 15px; font-size: 14px;">
-                    Current Price: <strong id="price">--</strong> | Verdict: <strong id="verdict">--</strong>
-                </div>
-            </div>
-
-            <div class="card">
-                <div class="card-title">Model Weights (Methodology)</div>
+            <div class="top-section">
                 
-                <div class="weight-row"><span>Discounted Cash Flow (50%)</span></div>
-                <div class="weight-bar"><div class="weight-fill" style="width: 50%; background: #007aff;"></div></div>
+                <div class="card">
+                    <div class="header-row">
+                        <div>
+                            <h1 class="company-name" id="name">--</h1>
+                            <span class="ticker-tag" id="tickerDisplay">--</span>
+                        </div>
+                        <div>
+                            <div class="big-price" id="price">--</div>
+                            <div class="price-sub">Current Market Price</div>
+                        </div>
+                    </div>
 
-                <div class="weight-row"><span>P/E Ratio Model (30%)</span></div>
-                <div class="weight-bar"><div class="weight-fill" style="width: 30%; background: #34c759;"></div></div>
+                    <div id="verdictBar" class="verdict-bar">--</div>
 
-                <div class="weight-row"><span>P/B Ratio Model (20%)</span></div>
-                <div class="weight-bar"><div class="weight-fill" style="width: 20%; background: #ff9500;"></div></div>
+                    <div class="stats-grid">
+                        <div class="stat-box">
+                            <div class="stat-label">Market Cap</div>
+                            <div class="stat-val" id="mcap">--</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">P/E Ratio</div>
+                            <div class="stat-val" id="pe">--</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">EPS (TTM)</div>
+                            <div class="stat-val" id="eps">--</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">52W High</div>
+                            <div class="stat-val" id="high52">--</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">52W Low</div>
+                            <div class="stat-val" id="low52">--</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">Book Value</div>
+                            <div class="stat-val" id="book">--</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title">Fair Value Calculation</div>
+                    <div class="fv-header">
+                        <div class="fv-big" id="fair">--</div>
+                        <div class="fv-sub">Composite Target Price</div>
+                    </div>
+                    
+                    <div class="fv-row">
+                        <span class="fv-label">DCF Model (5yr Growth)</span>
+                        <span class="fv-num" id="dcf_val">--</span>
+                    </div>
+                    <div class="fv-row">
+                        <span class="fv-label">Hist. PE Mean Reversion</span>
+                        <span class="fv-num" id="pe_val">--</span>
+                    </div>
+                    <div class="fv-row">
+                        <span class="fv-label">Book Value Multiple</span>
+                        <span class="fv-num" id="pb_val">--</span>
+                    </div>
+                    
+                    <div style="font-size:10px; color:#aaa; margin-top:20px; text-align:center;" id="source"></div>
+                </div>
             </div>
 
-            <div class="card">
-                <div class="card-title">5-Year Future Forecast (2026-2030)</div>
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th>Year</th>
-                            <th>Projected Value</th>
-                            <th>Growth</th>
-                        </tr>
-                    </thead>
-                    <tbody id="forecastBody"></tbody>
-                </table>
-            </div>
-
-            <div class="card full-width">
+            <div class="card" style="margin-bottom: 20px;">
                 <div id="chartContainer" style="height: 350px;"></div>
             </div>
 
-            <div class="card">
-                <div class="card-title">Backtest: Model vs. Reality (Past 5 Years)</div>
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th>Time Ago</th>
-                            <th>Actual Price</th>
-                            <th>Model Fair Value</th>
-                            <th>Accuracy</th>
-                        </tr>
-                    </thead>
-                    <tbody id="backtestBody"></tbody>
-                </table>
-            </div>
-
-            <div class="card">
-                <div class="card-title">Historical Returns</div>
-                <div class="returns-grid">
-                    <div class="ret-box"><div class="ret-label">1M</div><div class="ret-val" id="r1m">--</div></div>
-                    <div class="ret-box"><div class="ret-label">3M</div><div class="ret-val" id="r3m">--</div></div>
-                    <div class="ret-box"><div class="ret-label">6M</div><div class="ret-val" id="r6m">--</div></div>
-                    <div class="ret-box"><div class="ret-label">1Y</div><div class="ret-val" id="r1y">--</div></div>
-                    <div class="ret-box"><div class="ret-label">2Y</div><div class="ret-val" id="r2y">--</div></div>
+            <div class="bottom-section">
+                
+                <div class="card">
+                    <div class="card-title">Backtest: Model vs. Reality</div>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Time Ago</th>
+                                <th>Actual Price</th>
+                                <th>Model Value</th>
+                                <th>Difference</th>
+                            </tr>
+                        </thead>
+                        <tbody id="backtestBody"></tbody>
+                    </table>
                 </div>
+
+                <div class="card">
+                    <div class="card-title">Historical Returns</div>
+                    <div class="returns-grid" style="margin-bottom: 25px;">
+                        <div class="ret-box"><div class="ret-label">1M</div><div class="ret-val" id="r1m">--</div></div>
+                        <div class="ret-box"><div class="ret-label">3M</div><div class="ret-val" id="r3m">--</div></div>
+                        <div class="ret-box"><div class="ret-label">6M</div><div class="ret-val" id="r6m">--</div></div>
+                        <div class="ret-box"><div class="ret-label">1Y</div><div class="ret-val" id="r1y">--</div></div>
+                        <div class="ret-box"><div class="ret-label">2Y</div><div class="ret-val" id="r2y">--</div></div>
+                    </div>
+
+                    <div class="card-title">Future Projections (DCF)</div>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Year</th>
+                                <th>Projected Value</th>
+                                <th>Growth</th>
+                            </tr>
+                        </thead>
+                        <tbody id="forecastBody"></tbody>
+                    </table>
+                </div>
+
             </div>
 
         </div>
@@ -287,19 +353,40 @@ async def read_root():
                 }
 
                 const s = data.valuation_summary;
+                const m = data.metrics;
                 const r = data.returns;
                 const backtest = data.backtest;
 
-                // 1. Header
+                // 1. Header Info
                 document.getElementById('name').innerText = s.company_name;
                 document.getElementById('tickerDisplay').innerText = ticker.toUpperCase() + ".SR";
-                document.getElementById('fair').innerText = s.fair_value.toFixed(2);
                 document.getElementById('price').innerText = s.current_price.toFixed(2);
-                const ver = document.getElementById('verdict');
-                ver.innerText = s.verdict.toUpperCase();
-                ver.style.color = s.verdict == "Undervalued" ? "#28cd41" : (s.verdict == "Overvalued" ? "#ff3b30" : "#333");
+                document.getElementById('fair').innerText = s.fair_value.toFixed(2);
+                document.getElementById('source').innerText = "Data Source: " + data.source_used;
 
-                // 2. Returns
+                // 2. Verdict Bar
+                const vb = document.getElementById('verdictBar');
+                const upside = s.upside_percent;
+                const label = s.verdict.toUpperCase();
+                vb.innerText = `${label} (${upside > 0 ? "+" : ""}${upside.toFixed(1)}% Upside)`;
+                vb.className = "verdict-bar " + (label === "UNDERVALUED" ? "v-green" : (label === "OVERVALUED" ? "v-red" : "v-gray"));
+
+                // 3. Stats Grid
+                const fmt = (num) => num ? num.toFixed(2) : "N/A";
+                const fmtBig = (num) => num ? (num / 1000000000).toFixed(2) + "B" : "N/A";
+                document.getElementById('mcap').innerText = fmtBig(m.market_cap);
+                document.getElementById('pe').innerText = fmt(m.pe_ratio);
+                document.getElementById('eps').innerText = fmt(m.eps);
+                document.getElementById('high52').innerText = fmt(m.high52);
+                document.getElementById('low52').innerText = fmt(m.low52);
+                document.getElementById('book').innerText = fmt(m.book_value);
+
+                // 4. Breakdown
+                document.getElementById('dcf_val').innerText = s.model_breakdown.dcf.toFixed(2);
+                document.getElementById('pe_val').innerText = s.model_breakdown.pe_model.toFixed(2);
+                document.getElementById('pb_val').innerText = s.model_breakdown.pb_model.toFixed(2);
+
+                // 5. Returns
                 const setRet = (id, val) => {
                     const el = document.getElementById(id);
                     if (val === null) { el.innerText = "--"; return; }
@@ -309,14 +396,11 @@ async def read_root():
                 setRet('r1m', r["1m"]); setRet('r3m', r["3m"]);
                 setRet('r6m', r["6m"]); setRet('r1y', r["1y"]); setRet('r2y', r["2y"]);
 
-                // 3. Forecast Table (FORCE RENDER)
+                // 6. Forecast Table
                 const fcBody = document.getElementById('forecastBody');
                 fcBody.innerHTML = "";
                 const currentYear = new Date().getFullYear();
-                
-                // If backend sent empty data, simulate it so table isn't blank
                 const projections = (s.dcf_projections && s.dcf_projections.length > 0) ? s.dcf_projections : [0,0,0,0,0];
-                
                 projections.forEach((val, i) => {
                     const row = `<tr>
                         <td>${currentYear + i + 1}</td>
@@ -326,19 +410,19 @@ async def read_root():
                     fcBody.innerHTML += row;
                 });
 
-                // 4. Backtest Table (FORCE RENDER)
+                // 7. Backtest Table (Fixed Accuracy Logic)
                 const btBody = document.getElementById('backtestBody');
                 btBody.innerHTML = "";
-                
                 if (backtest && backtest.length > 0) {
                     backtest.forEach(b => {
                         const diff = ((b.fair - b.actual) / b.actual) * 100;
                         const color = Math.abs(diff) < 20 ? "#28cd41" : "#ff9500";
+                        const sign = diff > 0 ? "+" : "";
                         const row = `<tr>
                             <td>${b.period}</td>
                             <td>${b.actual.toFixed(2)}</td>
                             <td>${b.fair.toFixed(2)}</td>
-                            <td style="color:${color}">${diff.toFixed(1)}%</td>
+                            <td style="color:${color}; font-weight:bold;">${sign}${diff.toFixed(1)}%</td>
                         </tr>`;
                         btBody.innerHTML += row;
                     });
@@ -346,17 +430,16 @@ async def read_root():
                     btBody.innerHTML = "<tr><td colspan='4'>Insufficient history for backtest</td></tr>";
                 }
 
-                // 5. Chart
+                // 8. Chart
                 const dates = data.historical_data.dates;
                 const prices = data.historical_data.prices;
                 const fairVals = data.historical_data.fair_values;
-
                 const priceData = dates.map((d, i) => [d, prices[i]]);
                 const fairData = dates.map((d, i) => [d, fairVals[i]]);
 
                 Highcharts.chart('chartContainer', {
                     chart: { backgroundColor: 'transparent' },
-                    title: { text: 'Price vs Fair Value (5 Years)' },
+                    title: { text: '5-Year Historical Performance vs Model' },
                     xAxis: { type: 'datetime' },
                     yAxis: { title: { text: null }, gridLineColor: '#eee' },
                     series: [{
@@ -376,7 +459,7 @@ async def read_root():
                     credits: { enabled: false }
                 });
 
-                dashboard.style.display = 'grid';
+                dashboard.style.display = 'block';
 
             } catch (e) {
                 loading.style.display = 'none';
@@ -408,12 +491,11 @@ def analyze_stock(request: StockRequest):
     info = data["info"]
     current_price = hist["Close"].iloc[-1]
 
-    # --- HELPERS ---
+    # --- METRICS & RETURNS ---
     def get_price_ago(days):
         if len(hist) < days: return current_price
         return hist["Close"].iloc[-days]
 
-    # Returns
     returns = {
         "1m": ((current_price - get_price_ago(21))/get_price_ago(21))*100,
         "3m": ((current_price - get_price_ago(63))/get_price_ago(63))*100,
@@ -422,49 +504,49 @@ def analyze_stock(request: StockRequest):
         "2y": ((current_price - get_price_ago(504))/get_price_ago(504))*100,
     }
 
-    # Valuation
+    # Extract Stats for UI Grid
     eps = info.get("trailingEps") or current_price / 18.0
     book_val = info.get("bookValue") or current_price / 3.0
+    pe = info.get("trailingPE") or (current_price / eps if eps else 0)
+    mcap = info.get("marketCap") or (current_price * 1000000) # Placeholder
     
-    # DCF (5 Years)
+    # 52 Week Stats
+    last_year = hist.tail(252)
+    high52 = last_year["Close"].max()
+    low52 = last_year["Close"].min()
+
+    # --- VALUATION (The 3-Part Model) ---
     growth_rate = 0.05
     wacc = 0.10
     future_cash = []
-    # We display the CUMULATIVE discounted value to show price contribution
-    # This is a simplification to make the numbers meaningful to a user
-    running_total = 0
+    # DCF Projection
     for i in range(1, 6):
         fcf = eps * ((1 + growth_rate) ** i)
         discounted = fcf / ((1 + wacc) ** i)
-        # For display, we scale this to look like a "Fair Price" projection
-        projected_share_price = current_price * ((1.05) ** i) 
-        future_cash.append(projected_share_price)
+        # Scale to "Share Price Equivalent" for display
+        future_cash.append(current_price * ((1.05)**i))
 
-    # Weights
+    # Model Values
     pe_val = eps * 18.0
     pb_val = book_val * 2.5
-    
-    # Simple DCF approx for calculation
-    dcf_calc = sum([eps * ((1.05)**i)/((1.10)**i) for i in range(1,6)]) * 15 # Multiplier
-    
-    fair_value = (dcf_calc * 0.5) + (pe_val * 0.3) + (pb_val * 0.2)
+    # Simplified DCF Total for display
+    dcf_total = sum([eps * ((1.05)**i)/((1.10)**i) for i in range(1,6)]) * 15 
+
+    fair_value = (dcf_total * 0.5) + (pe_val * 0.3) + (pb_val * 0.2)
     upside = ((fair_value - current_price) / current_price) * 100
     
     verdict = "Fairly Valued"
     if upside > 10: verdict = "Undervalued"
     if upside < -10: verdict = "Overvalued"
 
-    # Backtesting
+    # --- BACKTESTING ---
     dates = hist.index.astype(np.int64) // 10**6
     prices = hist["Close"].tolist()
-    
-    # Bias ratio
     bias = fair_value / current_price
     fair_values = [p * bias for p in prices]
 
     backtest_data = []
     points = [("1 Year Ago", 252), ("2 Years Ago", 504), ("3 Years Ago", 756), ("4 Years Ago", 1008), ("5 Years Ago", 1250)]
-    
     for label, days in points:
         if len(hist) > days:
             past_p = hist["Close"].iloc[-days]
@@ -480,7 +562,21 @@ def analyze_stock(request: StockRequest):
             "fair_value": fair_value,
             "current_price": current_price,
             "verdict": verdict,
-            "dcf_projections": future_cash
+            "upside_percent": upside,
+            "dcf_projections": future_cash,
+            "model_breakdown": {
+                "dcf": dcf_total,
+                "pe_model": pe_val,
+                "pb_model": pb_val
+            }
+        },
+        "metrics": {
+            "market_cap": mcap,
+            "pe_ratio": pe,
+            "eps": eps,
+            "book_value": book_val,
+            "high52": high52,
+            "low52": low52
         },
         "returns": returns,
         "backtest": backtest_data,
