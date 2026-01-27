@@ -14,3 +14,4 @@ lxml
 scikit-learn
 beautifulsoup4
 pydantic
+openpyxl
