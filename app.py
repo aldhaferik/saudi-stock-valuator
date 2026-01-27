@@ -142,7 +142,7 @@ class DataFetcher:
 
 def fetch_saudi_risk_free_from_excel(
     self,
-    excel_path: str = "data/saudi_yields.xlsx",
+    excel_path: str = "saudi_yields.xlsx",
     maturity_col: str = "10-Year government bond yield",
 ) -> float:
     """
@@ -684,11 +684,13 @@ def analyze_stock(request: StockRequest):
 
     # 3) Risk-free rate (EconDB)
     try:
-        rf = fetcher.fetch_saudi_risk_free_tradingeconomics()
+    rf = fetcher.fetch_saudi_risk_free_from_excel(
+        excel_path="saudi_yields.xlsx",
+        maturity_col="10-Year government bond yield",
+    )
     except Exception as e:
-        return {
-        "error": f"Could not fetch Saudi risk-free rate from TradingEconomics: {str(e)}"
-    }
+        return {"error": f"Could not fetch Saudi risk-free rate from Excel: {str(e)}"}
+
 
     # 4) Expected market return and ERP from historical TASI
     try:
