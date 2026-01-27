@@ -107,14 +107,14 @@ class DataFetcher:
         excel_path: str = "saudi_yields.xlsx",
         maturity_col: str = "10-Year government bond yield",
     ) -> float:
-    """
-    Reads Saudi government bond yield from a local Excel file.
-    Expects columns:
-      - TIME
-      - e.g. '10-Year government bond yield'
-    Missing values may appear as '..'
-    Returns decimal (e.g., 0.0564).
-    """
+        """
+        Reads Saudi government bond yield from a local Excel file.
+        Expects columns:
+        - TIME
+        - e.g. '10-Year government bond yield'
+        Missing values may appear as '..'
+        Returns decimal (e.g., 0.0564).
+        """
         df = pd.read_excel(excel_path)
 
         if "TIME" not in df.columns:
