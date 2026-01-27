@@ -103,54 +103,43 @@ class DataFetcher:
         }
 
     def fetch_saudi_risk_free_tradingeconomics(self) -> float:
-        """
-        TradingEconomics bonds snapshot endpoint (documented).
-        We request 10Y bonds and then pick Saudi Arabia from the returned list.
-        Docs: /markets/bond?c=API_KEY&type=10Y
-        """
-        url = "https://api.tradingeconomics.com/markets/bond"
-        params = {
-        "c": "guest:guest",  # free guest access (may be rate-limited)
+    url = "https://api.tradingeconomics.com/markets/bond"
+    params = {
+        "c": "guest:guest",
         "type": "10Y",
         "f": "json",
-        }
+    }
 
-        r = requests.get(url, params=params, headers=self._headers(), timeout=10)
+    r = requests.get(url, params=params, headers=self._headers(), timeout=10)
     if r.status_code != 200:
         raise ValueError(f"TradingEconomics bond API failed ({r.status_code})")
 
-        data = r.json()
+    data = r.json()
     if not isinstance(data, list):
-        raise ValueError("Unexpected TradingEconomics response format (expected a list).")
+        raise ValueError("Unexpected TradingEconomics response format")
 
-        # Look for Saudi 10Y
-        candidates = []
+    ten_y_percent = None
     for item in data:
-        country = str(item.get("Country", "")).strip().lower()
-        name = str(item.get("Name", "")).strip().lower()
-        # Some entries may label it as "Saudi Arabia" in Country, and "Saudi Arabia 10Y" in Name
+        country = str(item.get("Country", "")).lower()
+        name = str(item.get("Name", "")).lower()
         if country == "saudi arabia" or "saudi" in name:
-            # Prefer 'Last' then 'Close'
-            y = item.get("Last", None)
-            if y is None:
-                y = item.get("Close", None)
+            y = item.get("Last") or item.get("Close")
             if y is not None:
-                candidates.append(float(y))
+                ten_y_percent = float(y)
+                break
 
-    if not candidates:
-        raise ValueError("Saudi Arabia 10Y yield not found in TradingEconomics 10Y bond snapshot response.")
+    if ten_y_percent is None:
+        raise ValueError("Saudi Arabia 10Y yield not found")
 
-        # Use the first found (usually only one)
-        ten_y_percent = candidates[0]
+    # Convert percent to decimal
+    rf = ten_y_percent / 100.0
 
-        # Convert percent to decimal
-        rf = ten_y_percent / 100.0
-
-        # sanity guard only
+    # sanity guard only
     if rf <= 0 or rf > 0.50:
         raise ValueError(f"Risk-free rate out of bounds after parsing: {rf}")
 
-        return rf
+    return rf
+
 
 # =========================================================
 # 2) UI (unchanged)
