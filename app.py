@@ -640,9 +640,9 @@ def analyze_stock(request: StockRequest):
 
     # 3) Risk-free rate (EconDB)
     try:
-    rf = fetcher.fetch_saudi_risk_free_tradingeconomics()
-except Exception as e:
-    return {
+        rf = fetcher.fetch_saudi_risk_free_tradingeconomics()
+    except Exception as e:
+        return {
         "error": f"Could not fetch Saudi risk-free rate from TradingEconomics: {str(e)}"
     }
 
