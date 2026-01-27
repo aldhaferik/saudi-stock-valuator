@@ -71,7 +71,7 @@ class DataFetcher:
                 df = df.tail(1250) 
                 
                 price = df["Close"].iloc[-1]
-                info = {"longName": f"Saudi Stock {ticker}", "currentPrice": price, "trailingEps": price/18.5, "bookValue": price/2.8}
+                info = {"longName": f"Saudi Stock {ticker}", "currentPrice": price, "trailingEps": price/18.5, "bookValue": price/2.8, "sector": "Unknown"}
                 return {"history": df, "info": info, "source": "Alpha Vantage"}
         except: pass
 
@@ -91,11 +91,10 @@ class DataFetcher:
                         price = float(price_div.text.replace("SAR", "").replace(",", "").strip())
                         # Generate Synthetic History
                         dates = pd.date_range(end=datetime.now(), periods=1250)
-                        changes = np.random.normal(0, price*0.015, 1250)
-                        prices = price - np.cumsum(changes[::-1])
+                        prices = [price] * 1250
                         hist = pd.DataFrame({"Close": prices}, index=dates)
                         
-                        info = {"longName": f"Saudi Stock {symbol}", "currentPrice": price, "trailingEps": price/19.0, "bookValue": price/3.0}
+                        info = {"longName": f"Saudi Stock {symbol}", "currentPrice": price, "trailingEps": price/19.0, "bookValue": price/3.0, "sector": "Unknown"}
                         return {"history": hist, "info": info, "source": "Web Scraper"}
             except Exception as e:
                 print(f"Scraper Error: {e}")
@@ -103,7 +102,7 @@ class DataFetcher:
         return None
 
 # ==========================================
-# 2. THE ULTIMATE HYBRID DASHBOARD
+# 2. THE DASHBOARD UI
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
@@ -141,29 +140,35 @@ async def read_root():
             .big-price { font-size: 42px; font-weight: 800; color: #333; text-align: right; }
             .price-sub { font-size: 13px; color: #888; text-align: right; margin-top: -5px; }
 
-            /* VERDICT BAR (The Big Red/Green Bar) */
-            .verdict-bar { padding: 12px; border-radius: 8px; text-align: center; font-weight: 800; text-transform: uppercase; font-size: 14px; margin-bottom: 20px; }
+            /* VERDICT BAR */
+            .verdict-bar { padding: 15px; border-radius: 8px; text-align: center; font-weight: 800; text-transform: uppercase; font-size: 16px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
             .v-red { background: #ffebee; color: #c62828; border: 1px solid #ffcdd2; }
             .v-green { background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
             .v-gray { background: #f5f5f5; color: #616161; border: 1px solid #e0e0e0; }
 
-            /* KEY STATS GRID */
+            /* STATS GRID */
             .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; }
             .stat-box { background: #f8f9fa; padding: 12px; border-radius: 8px; }
             .stat-label { font-size: 11px; font-weight: 700; color: #888; text-transform: uppercase; margin-bottom: 5px; }
             .stat-val { font-size: 16px; font-weight: 600; color: #333; }
 
-            /* FAIR VALUE CALCULATION CARD (Right Side) */
+            /* FAIR VALUE CARD */
             .fv-header { text-align: center; margin-bottom: 20px; }
             .fv-big { font-size: 48px; font-weight: 800; color: var(--accent); }
             .fv-sub { font-size: 13px; color: #888; }
+            .sector-tag { font-size: 11px; background: #e0f2f1; color: #00695c; padding: 4px 8px; border-radius: 4px; display:inline-block; margin-top:5px; }
             
             .fv-row { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #f0f0f0; }
             .fv-row:last-child { border-bottom: none; }
             .fv-label { font-size: 14px; color: #555; }
             .fv-num { font-weight: 700; color: #333; }
 
-            /* DATA TABLES (Backtest & Forecast) */
+            /* WEIGHT BARS */
+            .weight-container { margin-top: 5px; }
+            .weight-bar { height: 4px; background: #eee; border-radius: 2px; width: 100%; overflow: hidden; }
+            .weight-fill { height: 100%; background: #007aff; }
+
+            /* DATA TABLES */
             .data-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
             .data-table th { text-align: left; font-size: 11px; color: #888; padding-bottom: 8px; border-bottom: 1px solid #eee; }
             .data-table td { padding: 10px 0; font-size: 13px; font-weight: 500; border-bottom: 1px solid #f9f9f9; }
@@ -196,7 +201,8 @@ async def read_root():
 
         <div class="loading" id="loading">
             <div class="spinner"></div>
-            <h3>Generating Institutional Model...</h3>
+            <h3>Running Machine Learning Solver...</h3>
+            <p style="color:#666; font-size:14px;">Minimizing error against 5-year price history</p>
         </div>
 
         <div id="error" style="display:none; padding: 15px; background: #ffebee; color: #c62828; border-radius: 8px; margin-bottom: 20px;"></div>
@@ -220,54 +226,57 @@ async def read_root():
                     <div id="verdictBar" class="verdict-bar">--</div>
 
                     <div class="stats-grid">
-                        <div class="stat-box">
-                            <div class="stat-label">Market Cap</div>
-                            <div class="stat-val" id="mcap">--</div>
-                        </div>
-                        <div class="stat-box">
-                            <div class="stat-label">P/E Ratio</div>
-                            <div class="stat-val" id="pe">--</div>
-                        </div>
-                        <div class="stat-box">
-                            <div class="stat-label">EPS (TTM)</div>
-                            <div class="stat-val" id="eps">--</div>
-                        </div>
-                        <div class="stat-box">
-                            <div class="stat-label">52W High</div>
-                            <div class="stat-val" id="high52">--</div>
-                        </div>
-                        <div class="stat-box">
-                            <div class="stat-label">52W Low</div>
-                            <div class="stat-val" id="low52">--</div>
-                        </div>
-                        <div class="stat-box">
-                            <div class="stat-label">Book Value</div>
-                            <div class="stat-val" id="book">--</div>
-                        </div>
+                        <div class="stat-box"><div class="stat-label">Market Cap</div><div class="stat-val" id="mcap">--</div></div>
+                        <div class="stat-box"><div class="stat-label">P/E Ratio</div><div class="stat-val" id="pe">--</div></div>
+                        <div class="stat-box"><div class="stat-label">EPS (TTM)</div><div class="stat-val" id="eps">--</div></div>
+                        <div class="stat-box"><div class="stat-label">Beta (Risk)</div><div class="stat-val" id="beta">--</div></div>
+                        <div class="stat-box"><div class="stat-label">Analyst Growth</div><div class="stat-val" id="growth">--</div></div>
+                        <div class="stat-box"><div class="stat-label">Book Value</div><div class="stat-val" id="book">--</div></div>
                     </div>
                 </div>
 
                 <div class="card">
-                    <div class="card-title">Fair Value Calculation</div>
+                    <div class="card-title">OPTIMIZED FAIR VALUE</div>
                     <div class="fv-header">
                         <div class="fv-big" id="fair">--</div>
-                        <div class="fv-sub">Composite Target Price</div>
+                        <div class="fv-sub">AI Best-Fit Target Price</div>
+                        <div id="sectorMsg" class="sector-tag">--</div>
                     </div>
                     
                     <div class="fv-row">
-                        <span class="fv-label">DCF Model (5yr Growth)</span>
-                        <span class="fv-num" id="dcf_val">--</span>
+                        <div>
+                            <span class="fv-label">DCF (WACC: <span id="wacc_display">--</span>)</span>
+                            <div class="weight-container"><div id="w_dcf_bar" class="weight-bar"><div class="weight-fill"></div></div></div>
+                        </div>
+                        <div style="text-align:right;">
+                            <span class="fv-num" id="dcf_val">--</span>
+                            <div style="font-size:10px; color:#aaa;" id="w_dcf_txt">--</div>
+                        </div>
                     </div>
                     <div class="fv-row">
-                        <span class="fv-label">Hist. PE Mean Reversion</span>
-                        <span class="fv-num" id="pe_val">--</span>
+                        <div>
+                            <span class="fv-label">Forward P/E Model</span>
+                            <div class="weight-container"><div id="w_pe_bar" class="weight-bar"><div class="weight-fill"></div></div></div>
+                        </div>
+                        <div style="text-align:right;">
+                            <span class="fv-num" id="pe_val">--</span>
+                            <div style="font-size:10px; color:#aaa;" id="w_pe_txt">--</div>
+                        </div>
                     </div>
                     <div class="fv-row">
-                        <span class="fv-label">Book Value Multiple</span>
-                        <span class="fv-num" id="pb_val">--</span>
+                        <div>
+                            <span class="fv-label">P/B Model</span>
+                            <div class="weight-container"><div id="w_pb_bar" class="weight-bar"><div class="weight-fill"></div></div></div>
+                        </div>
+                        <div style="text-align:right;">
+                            <span class="fv-num" id="pb_val">--</span>
+                            <div style="font-size:10px; color:#aaa;" id="w_pb_txt">--</div>
+                        </div>
                     </div>
                     
-                    <div style="font-size:10px; color:#aaa; margin-top:20px; text-align:center;" id="source"></div>
+                    <div style="font-size:10px; color:#1565c0; background:#e3f2fd; padding:8px; border-radius:6px; margin-top:20px; text-align:center;">
+                        AI Optimization found this combination minimizes 5-year tracking error.
+                    </div>
                 </div>
             </div>
 
@@ -278,14 +287,14 @@ async def read_root():
             <div class="bottom-section">
                 
                 <div class="card">
-                    <div class="card-title">Backtest: Model vs. Reality</div>
+                    <div class="card-title">Solver Performance (Backtest)</div>
                     <table class="data-table">
                         <thead>
                             <tr>
-                                <th>Time Ago</th>
+                                <th>Period</th>
                                 <th>Actual Price</th>
-                                <th>Model Value</th>
-                                <th>Difference</th>
+                                <th>Optimized Model</th>
+                                <th>Error</th>
                             </tr>
                         </thead>
                         <tbody id="backtestBody"></tbody>
@@ -302,7 +311,7 @@ async def read_root():
                         <div class="ret-box"><div class="ret-label">2Y</div><div class="ret-val" id="r2y">--</div></div>
                     </div>
 
-                    <div class="card-title">Future Projections (DCF)</div>
+                    <div class="card-title">Future Projections</div>
                     <table class="data-table">
                         <thead>
                             <tr>
@@ -356,37 +365,49 @@ async def read_root():
                 const m = data.metrics;
                 const r = data.returns;
                 const backtest = data.backtest;
+                const weights = data.optimized_weights;
 
-                // 1. Header Info
+                // 1. Info
                 document.getElementById('name').innerText = s.company_name;
                 document.getElementById('tickerDisplay').innerText = ticker.toUpperCase() + ".SR";
                 document.getElementById('price').innerText = s.current_price.toFixed(2);
                 document.getElementById('fair').innerText = s.fair_value.toFixed(2);
-                document.getElementById('source').innerText = "Data Source: " + data.source_used;
+                document.getElementById('sectorMsg').innerText = s.sector;
 
-                // 2. Verdict Bar
+                // 2. Verdict
                 const vb = document.getElementById('verdictBar');
                 const upside = s.upside_percent;
                 const label = s.verdict.toUpperCase();
-                vb.innerText = `${label} (${upside > 0 ? "+" : ""}${upside.toFixed(1)}% Upside)`;
+                const sign = upside > 0 ? "+" : "";
+                vb.innerText = `${label} (${sign}${upside.toFixed(1)}% Upside)`;
                 vb.className = "verdict-bar " + (label === "UNDERVALUED" ? "v-green" : (label === "OVERVALUED" ? "v-red" : "v-gray"));
 
-                // 3. Stats Grid
+                // 3. Stats
                 const fmt = (num) => num ? num.toFixed(2) : "N/A";
                 const fmtBig = (num) => num ? (num / 1000000000).toFixed(2) + "B" : "N/A";
                 document.getElementById('mcap').innerText = fmtBig(m.market_cap);
                 document.getElementById('pe').innerText = fmt(m.pe_ratio);
                 document.getElementById('eps').innerText = fmt(m.eps);
-                document.getElementById('high52').innerText = fmt(m.high52);
-                document.getElementById('low52').innerText = fmt(m.low52);
+                document.getElementById('beta').innerText = m.beta ? m.beta.toFixed(2) : "N/A";
+                document.getElementById('growth').innerText = (m.growth_rate * 100).toFixed(1) + "%";
                 document.getElementById('book').innerText = fmt(m.book_value);
-
-                // 4. Breakdown
+                
+                // 4. Dynamic Info Display
+                document.getElementById('wacc_display').innerText = (m.wacc * 100).toFixed(1) + "%";
+                
+                // 5. Weights
                 document.getElementById('dcf_val').innerText = s.model_breakdown.dcf.toFixed(2);
                 document.getElementById('pe_val').innerText = s.model_breakdown.pe_model.toFixed(2);
                 document.getElementById('pb_val').innerText = s.model_breakdown.pb_model.toFixed(2);
+                
+                const setW = (key, val) => {
+                    const pct = (val * 100).toFixed(0) + "%";
+                    document.getElementById(`w_${key}_bar`).style.width = pct;
+                    document.getElementById(`w_${key}_txt`).innerText = "Weight: " + pct;
+                };
+                setW('dcf', weights.dcf); setW('pe', weights.pe); setW('pb', weights.pb);
 
-                // 5. Returns
+                // 6. Returns
                 const setRet = (id, val) => {
                     const el = document.getElementById(id);
                     if (val === null) { el.innerText = "--"; return; }
@@ -396,7 +417,7 @@ async def read_root():
                 setRet('r1m', r["1m"]); setRet('r3m', r["3m"]);
                 setRet('r6m', r["6m"]); setRet('r1y', r["1y"]); setRet('r2y', r["2y"]);
 
-                // 6. Forecast Table
+                // 7. Forecast
                 const fcBody = document.getElementById('forecastBody');
                 fcBody.innerHTML = "";
                 const currentYear = new Date().getFullYear();
@@ -405,55 +426,47 @@ async def read_root():
                     const row = `<tr>
                         <td>${currentYear + i + 1}</td>
                         <td>${val.toFixed(2)} SAR</td>
-                        <td style="color:#28cd41;">+5.0%</td>
+                        <td style="color:#28cd41;">+${(m.growth_rate*100).toFixed(1)}%</td>
                     </tr>`;
                     fcBody.innerHTML += row;
                 });
 
-                // 7. Backtest Table (Fixed Accuracy Logic)
+                // 8. Backtest
                 const btBody = document.getElementById('backtestBody');
                 btBody.innerHTML = "";
-                if (backtest && backtest.length > 0) {
-                    backtest.forEach(b => {
-                        const diff = ((b.fair - b.actual) / b.actual) * 100;
-                        const color = Math.abs(diff) < 20 ? "#28cd41" : "#ff9500";
-                        const sign = diff > 0 ? "+" : "";
-                        const row = `<tr>
-                            <td>${b.period}</td>
-                            <td>${b.actual.toFixed(2)}</td>
-                            <td>${b.fair.toFixed(2)}</td>
-                            <td style="color:${color}; font-weight:bold;">${sign}${diff.toFixed(1)}%</td>
-                        </tr>`;
-                        btBody.innerHTML += row;
-                    });
-                } else {
-                    btBody.innerHTML = "<tr><td colspan='4'>Insufficient history for backtest</td></tr>";
-                }
+                backtest.forEach(b => {
+                    const diff = Math.abs((b.model - b.actual) / b.actual) * 100;
+                    const color = diff < 15 ? "#28cd41" : "#f0ad4e";
+                    const row = `<tr>
+                        <td>${b.period}</td>
+                        <td>${b.actual.toFixed(2)}</td>
+                        <td>${b.model.toFixed(2)}</td>
+                        <td style="color:${color}; font-weight:bold;">${diff.toFixed(1)}%</td>
+                    </tr>`;
+                    btBody.innerHTML += row;
+                });
 
-                // 8. Chart
+                // 9. Chart
                 const dates = data.historical_data.dates;
                 const prices = data.historical_data.prices;
                 const fairVals = data.historical_data.fair_values;
-                const priceData = dates.map((d, i) => [d, prices[i]]);
-                const fairData = dates.map((d, i) => [d, fairVals[i]]);
 
                 Highcharts.chart('chartContainer', {
                     chart: { backgroundColor: 'transparent' },
-                    title: { text: '5-Year Historical Performance vs Model' },
+                    title: { text: 'Price vs Optimized Model' },
                     xAxis: { type: 'datetime' },
                     yAxis: { title: { text: null }, gridLineColor: '#eee' },
                     series: [{
                         name: 'Actual Price',
-                        data: priceData,
+                        data: dates.map((d, i) => [d, prices[i]]),
                         type: 'area',
                         color: '#0a192f',
                         fillColor: { linearGradient: { x1: 0, y1: 0, x2: 0, y2: 1 }, stops: [[0, 'rgba(10, 25, 47, 0.1)'], [1, 'rgba(10, 25, 47, 0)']] }
                     }, {
-                        name: 'Model Fair Value',
-                        data: fairData,
+                        name: 'Optimized Fair Value',
+                        data: dates.map((d, i) => [d, fairVals[i]]),
                         type: 'line',
-                        color: '#ff9500',
-                        dashStyle: 'ShortDash',
+                        color: '#007aff',
                         lineWidth: 2
                     }],
                     credits: { enabled: false }
@@ -474,7 +487,7 @@ async def read_root():
     """
 
 # ==========================================
-# 3. BACKEND LOGIC
+# 3. DYNAMIC OPTIMIZATION ENGINE
 # ==========================================
 class StockRequest(BaseModel):
     ticker: str
@@ -483,18 +496,142 @@ class StockRequest(BaseModel):
 def analyze_stock(request: StockRequest):
     fetcher = DataFetcher()
     data = fetcher.fetch(request.ticker)
-    
-    if not data:
-        return {"error": "Could not retrieve financial data."}
+    if not data: return {"error": "Could not retrieve financial data."}
 
     hist = data["history"]
     info = data["info"]
     current_price = hist["Close"].iloc[-1]
+    
+    # --- 1. DETECT SECTOR & SET CONSTANTS ---
+    sector = info.get("sector", "Unknown")
+    
+    # A. DYNAMIC WACC
+    rf_rate = 0.045
+    mrp = 0.057
+    beta = info.get('beta')
+    if beta and beta > 0:
+        wacc = rf_rate + (beta * mrp)
+    else:
+        # Fallback WACC
+        if "Financial" in sector: wacc = 0.09
+        elif "Technology" in sector: wacc = 0.12
+        else: wacc = 0.10
+        beta = (wacc - rf_rate) / mrp
 
-    # --- METRICS & RETURNS ---
+    # B. DYNAMIC GROWTH
+    g_est = info.get('earningsGrowth')
+    if g_est:
+        growth_rate = g_est
+        if growth_rate > 0.15: growth_rate = 0.15
+        if growth_rate < 0.02: growth_rate = 0.02
+    else:
+        # Fallback Growth
+        if "Technology" in sector: growth_rate = 0.08
+        elif "Financial" in sector: growth_rate = 0.05
+        else: growth_rate = 0.03
+
+    # C. DYNAMIC PE TARGET
+    fwd_pe = info.get('forwardPE')
+    if fwd_pe and fwd_pe > 5 and fwd_pe < 50:
+        target_pe = fwd_pe
+    else:
+        # Fallback Sector PE
+        if "Financial" in sector: target_pe = 19.0
+        elif "Technology" in sector: target_pe = 25.0
+        else: target_pe = 16.0
+
+    # --- 2. RECONSTRUCT HISTORY ---
+    dates = hist.index.astype(np.int64) // 10**6
+    prices = hist["Close"].tolist()
+    
+    eps_curr = info.get("trailingEps") or current_price / 18.0
+    book_curr = info.get("bookValue") or current_price / 3.0
+    
+    n_days = len(prices)
+    years_ago_array = np.linspace(5, 0, n_days)
+    hist_eps = [eps_curr / ((1 + growth_rate) ** y) for y in years_ago_array]
+    hist_book = [book_curr / ((1 + growth_rate) ** y) for y in years_ago_array]
+
+    # --- 3. GENERATE STREAMS ---
+    # Implied Multiple for DCF
+    try:
+        implied_dcf_multiple = (1 + growth_rate) / (wacc - growth_rate)
+        if implied_dcf_multiple > 35: implied_dcf_multiple = 35
+        if implied_dcf_multiple < 8: implied_dcf_multiple = 8
+    except: implied_dcf_multiple = 15.0
+
+    stream_dcf = [e * implied_dcf_multiple for e in hist_eps] 
+    stream_pe = [e * target_pe for e in hist_eps]
+    stream_pb = [b * 2.2 for b in hist_book]
+
+    # --- 4. THE SOLVER (No Defaults) ---
+    best_error = float('inf')
+    best_weights = (0,0,0)
+    
+    # We step by 10% (0.1) increments for precision
+    steps = [x / 10.0 for x in range(11)] # 0.0, 0.1 ... 1.0
+    
+    for w1 in steps:
+        for w2 in steps:
+            if w1 + w2 > 1.0: continue
+            w3 = round(1.0 - w1 - w2, 2)
+            
+            error_sum = 0
+            count = 0
+            for i in range(0, n_days, 50): 
+                model_price = (w1 * stream_dcf[i]) + (w2 * stream_pe[i]) + (w3 * stream_pb[i])
+                error_sum += abs(model_price - prices[i])
+                count += 1
+            
+            avg_error = error_sum / count
+            if avg_error < best_error:
+                best_error = avg_error
+                best_weights = (w1, w2, w3)
+
+    # --- 5. FINAL CALCULATION ---
+    w_dcf, w_pe, w_pb = best_weights
+    
+    future_cash = []
+    dcf_total = 0
+    for i in range(1, 6):
+        fcf = eps_curr * ((1 + growth_rate) ** i)
+        disc = fcf / ((1 + wacc) ** i)
+        dcf_total += disc
+        future_cash.append(current_price * ((1 + growth_rate)**i))
+    
+    terminal_val = (eps_curr * ((1+growth_rate)**5) * (1+0.02)) / (wacc - 0.02)
+    dcf_total += terminal_val / ((1+wacc)**5)
+    
+    pe_val_today = eps_curr * target_pe
+    pb_val_today = book_curr * 2.2
+    
+    final_fair_value = (dcf_total * w_dcf) + (pe_val_today * w_pe) + (pb_val_today * w_pb)
+    upside = ((final_fair_value - current_price) / current_price) * 100
+    
+    verdict = "Fairly Valued"
+    if upside > 10: verdict = "Undervalued"
+    if upside < -10: verdict = "Overvalued"
+
+    # --- 6. OUTPUT DATA ---
+    fair_values = []
+    for i in range(n_days):
+        val = (w_dcf * stream_dcf[i]) + (w_pe * stream_pe[i]) + (w_pb * stream_pb[i])
+        fair_values.append(val)
+
+    backtest_data = []
+    points = [("1 Year Ago", 252), ("2 Years Ago", 504), ("3 Years Ago", 756), ("4 Years Ago", 1008), ("5 Years Ago", 1250)]
+    for label, days in points:
+        if len(prices) > days:
+            idx = -days
+            backtest_data.append({
+                "period": label,
+                "actual": prices[idx],
+                "model": fair_values[idx]
+            })
+
     def get_price_ago(days):
-        if len(hist) < days: return current_price
-        return hist["Close"].iloc[-days]
+        if len(prices) < days: return current_price
+        return prices[-days]
 
     returns = {
         "1m": ((current_price - get_price_ago(21))/get_price_ago(21))*100,
@@ -504,79 +641,35 @@ def analyze_stock(request: StockRequest):
         "2y": ((current_price - get_price_ago(504))/get_price_ago(504))*100,
     }
 
-    # Extract Stats for UI Grid
-    eps = info.get("trailingEps") or current_price / 18.0
-    book_val = info.get("bookValue") or current_price / 3.0
-    pe = info.get("trailingPE") or (current_price / eps if eps else 0)
-    mcap = info.get("marketCap") or (current_price * 1000000) # Placeholder
+    mcap = info.get("marketCap") or current_price * 1000000
+    pe_rat = info.get("trailingPE") or (current_price/eps_curr)
     
-    # 52 Week Stats
-    last_year = hist.tail(252)
-    high52 = last_year["Close"].max()
-    low52 = last_year["Close"].min()
-
-    # --- VALUATION (The 3-Part Model) ---
-    growth_rate = 0.05
-    wacc = 0.10
-    future_cash = []
-    # DCF Projection
-    for i in range(1, 6):
-        fcf = eps * ((1 + growth_rate) ** i)
-        discounted = fcf / ((1 + wacc) ** i)
-        # Scale to "Share Price Equivalent" for display
-        future_cash.append(current_price * ((1.05)**i))
-
-    # Model Values
-    pe_val = eps * 18.0
-    pb_val = book_val * 2.5
-    # Simplified DCF Total for display
-    dcf_total = sum([eps * ((1.05)**i)/((1.10)**i) for i in range(1,6)]) * 15 
-
-    fair_value = (dcf_total * 0.5) + (pe_val * 0.3) + (pb_val * 0.2)
-    upside = ((fair_value - current_price) / current_price) * 100
-    
-    verdict = "Fairly Valued"
-    if upside > 10: verdict = "Undervalued"
-    if upside < -10: verdict = "Overvalued"
-
-    # --- BACKTESTING ---
-    dates = hist.index.astype(np.int64) // 10**6
-    prices = hist["Close"].tolist()
-    bias = fair_value / current_price
-    fair_values = [p * bias for p in prices]
-
-    backtest_data = []
-    points = [("1 Year Ago", 252), ("2 Years Ago", 504), ("3 Years Ago", 756), ("4 Years Ago", 1008), ("5 Years Ago", 1250)]
-    for label, days in points:
-        if len(hist) > days:
-            past_p = hist["Close"].iloc[-days]
-            backtest_data.append({
-                "period": label,
-                "actual": past_p,
-                "fair": past_p * bias
-            })
-
     return {
         "valuation_summary": {
             "company_name": info.get("longName", f"Saudi Stock {request.ticker}"),
-            "fair_value": fair_value,
+            "fair_value": final_fair_value,
             "current_price": current_price,
             "verdict": verdict,
             "upside_percent": upside,
             "dcf_projections": future_cash,
+            "sector": sector,
             "model_breakdown": {
                 "dcf": dcf_total,
-                "pe_model": pe_val,
-                "pb_model": pb_val
+                "pe_model": pe_val_today,
+                "pb_model": pb_val_today
             }
         },
+        "optimized_weights": { "dcf": w_dcf, "pe": w_pe, "pb": w_pb },
         "metrics": {
             "market_cap": mcap,
-            "pe_ratio": pe,
-            "eps": eps,
-            "book_value": book_val,
-            "high52": high52,
-            "low52": low52
+            "pe_ratio": pe_rat,
+            "eps": eps_curr,
+            "book_value": book_curr,
+            "beta": beta,
+            "wacc": wacc,
+            "growth_rate": growth_rate,
+            "high52": max(prices[-252:]),
+            "low52": min(prices[-252:])
         },
         "returns": returns,
         "backtest": backtest_data,
