@@ -150,7 +150,7 @@ class DataFetcher:
     if rf <= 0 or rf > 0.50:
         raise ValueError(f"Risk-free rate out of bounds after parsing: {rf}")
 
-    return rf
+        return rf
 
 # =========================================================
 # 2) UI (unchanged)
