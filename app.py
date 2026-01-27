@@ -646,7 +646,7 @@ def analyze_stock(request: StockRequest):
 
     # 3) Risk-free rate (EconDB)
     try:
-    rf = fetcher.fetch_saudi_risk_free_from_excel(
+        rf = fetcher.fetch_saudi_risk_free_from_excel(
         excel_path="saudi_yields.xlsx",
         maturity_col="10-Year government bond yield",
     )
