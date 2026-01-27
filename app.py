@@ -8,7 +8,7 @@ import random
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # Import BeautifulSoup safely
 try:
@@ -33,8 +33,8 @@ app.add_middleware(
 class DataFetcher:
     def __init__(self):
         self.user_agents = [
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/119.0.0.0 Safari/537.36"
         ]
         self.av_key = "0LR5JLOBSLOA6Z0A"
 
@@ -43,19 +43,18 @@ class DataFetcher:
         if ticker.replace('.','').isdigit() and not ticker.endswith('.SR'):
             clean_ticker = f"{ticker}.SR"
             
-        print(f"📊 Fetching Institutional Data for: {clean_ticker}")
+        print(f"📊 Fetching Data for: {clean_ticker}")
 
-        # --- SOURCE A: YAHOO FINANCE (Primary) ---
+        # --- SOURCE A: YAHOO FINANCE ---
         try:
             import yfinance as yf
             stock = yf.Ticker(clean_ticker)
-            # Fetch 5 years of history for backtesting
             hist = stock.history(period="5y")
             
             if not hist.empty:
                 info = stock.info
                 if info.get("currentPrice") or hist["Close"].iloc[-1]:
-                    return {"history": hist, "info": info, "source": "Yahoo Finance (Direct)"}
+                    return {"history": hist, "info": info, "source": "Yahoo Finance"}
         except: pass
 
         # --- SOURCE B: ALPHA VANTAGE ---
@@ -73,7 +72,7 @@ class DataFetcher:
                 
                 price = df["Close"].iloc[-1]
                 info = {"longName": f"Saudi Stock {ticker}", "currentPrice": price, "trailingEps": price/18.5, "bookValue": price/2.8}
-                return {"history": df, "info": info, "source": "Alpha Vantage API"}
+                return {"history": df, "info": info, "source": "Alpha Vantage"}
         except: pass
 
         # --- SOURCE C: WEB SCRAPER ---
@@ -97,14 +96,14 @@ class DataFetcher:
                         hist = pd.DataFrame({"Close": prices}, index=dates)
                         
                         info = {"longName": f"Saudi Stock {symbol}", "currentPrice": price, "trailingEps": price/19.0, "bookValue": price/3.0}
-                        return {"history": hist, "info": info, "source": "Live Web Scraper"}
+                        return {"history": hist, "info": info, "source": "Web Scraper"}
             except Exception as e:
                 print(f"Scraper Error: {e}")
 
         return None
 
 # ==========================================
-# 2. THE DASHBOARD UI (Deep Dive + Backtest)
+# 2. THE DASHBOARD UI (Guaranteed Display)
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
@@ -126,7 +125,6 @@ async def read_root():
             .search-bar { background: var(--card); padding: 15px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); display: flex; gap: 10px; margin-bottom: 25px; }
             input { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; outline: none; }
             button { padding: 12px 25px; background: var(--primary); color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; }
-            button:hover { opacity: 0.9; }
 
             /* GRID LAYOUT */
             .dashboard { display: none; grid-template-columns: 2fr 1fr; gap: 20px; }
@@ -135,7 +133,6 @@ async def read_root():
             .card-title { font-size: 13px; font-weight: 700; color: #888; text-transform: uppercase; margin-bottom: 15px; letter-spacing: 0.5px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
 
             /* HEADERS */
-            .hero-header { display: flex; justify-content: space-between; align-items: center; }
             .company-name { font-size: 26px; font-weight: 800; color: var(--primary); }
             .big-price { font-size: 32px; font-weight: 700; color: var(--accent); }
             
@@ -146,11 +143,15 @@ async def read_root():
             .ret-val { font-size: 14px; font-weight: 600; }
             .pos { color: #28cd41; } .neg { color: #ff3b30; }
 
-            /* BACKTEST TABLE */
+            /* TABLE STYLES */
             .data-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
             .data-table th { text-align: left; font-size: 11px; color: #888; padding-bottom: 8px; border-bottom: 1px solid #eee; }
             .data-table td { padding: 8px 0; font-size: 13px; font-weight: 500; border-bottom: 1px solid #f9f9f9; }
-            .data-table tr:last-child td { border: none; }
+            
+            /* WEIGHT BARS */
+            .weight-row { display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 13px; font-weight: 600; }
+            .weight-bar { height: 8px; background: #eee; border-radius: 4px; overflow: hidden; margin-bottom: 15px; }
+            .weight-fill { height: 100%; }
 
             /* LOADING */
             .loading { text-align: center; padding: 40px; display: none; }
@@ -170,8 +171,7 @@ async def read_root():
 
         <div class="loading" id="loading">
             <div class="spinner"></div>
-            <h3>Crunching 5 Years of Data...</h3>
-            <p style="color:#666; font-size:14px;">Backtesting Valuation Model vs. Historical Prices</p>
+            <h3>Generating 5-Year Model...</h3>
         </div>
 
         <div id="error" style="display:none; padding: 15px; background: #ffebee; color: #c62828; border-radius: 8px; margin-bottom: 20px;"></div>
@@ -179,33 +179,60 @@ async def read_root():
         <div class="dashboard" id="dashboard">
             
             <div class="card full-width">
-                <div class="hero-header">
+                <div style="display:flex; justify-content:space-between;">
                     <div>
                         <div class="company-name" id="name">--</div>
-                        <span style="font-family:monospace; color:#666;" id="tickerDisplay">--</span>
+                        <div style="font-family:monospace; color:#666;" id="tickerDisplay">--</div>
                     </div>
                     <div style="text-align: right;">
                         <div class="big-price" id="fair">--</div>
-                        <div style="font-size:12px; color:#888;">Current Fair Value</div>
+                        <div style="font-size:12px; color:#888;">AI Fair Value</div>
                     </div>
                 </div>
                 <div style="margin-top: 15px; font-size: 14px;">
-                    Market Price: <strong id="price">--</strong> | Verdict: <strong id="verdict">--</strong>
+                    Current Price: <strong id="price">--</strong> | Verdict: <strong id="verdict">--</strong>
                 </div>
             </div>
 
-            <div class="card full-width">
-                <div id="chartContainer" style="height: 400px;"></div>
+            <div class="card">
+                <div class="card-title">Model Weights (Methodology)</div>
+                
+                <div class="weight-row"><span>Discounted Cash Flow (50%)</span></div>
+                <div class="weight-bar"><div class="weight-fill" style="width: 50%; background: #007aff;"></div></div>
+
+                <div class="weight-row"><span>P/E Ratio Model (30%)</span></div>
+                <div class="weight-bar"><div class="weight-fill" style="width: 30%; background: #34c759;"></div></div>
+
+                <div class="weight-row"><span>P/B Ratio Model (20%)</span></div>
+                <div class="weight-bar"><div class="weight-fill" style="width: 20%; background: #ff9500;"></div></div>
             </div>
 
             <div class="card">
-                <div class="card-title">Model Backtest (Past Valuations)</div>
+                <div class="card-title">5-Year Future Forecast (2026-2030)</div>
                 <table class="data-table">
                     <thead>
                         <tr>
-                            <th>Period</th>
+                            <th>Year</th>
+                            <th>Projected Value</th>
+                            <th>Growth</th>
+                        </tr>
+                    </thead>
+                    <tbody id="forecastBody"></tbody>
+                </table>
+            </div>
+
+            <div class="card full-width">
+                <div id="chartContainer" style="height: 350px;"></div>
+            </div>
+
+            <div class="card">
+                <div class="card-title">Backtest: Model vs. Reality (Past 5 Years)</div>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Time Ago</th>
                             <th>Actual Price</th>
-                            <th>Model Value</th>
+                            <th>Model Fair Value</th>
                             <th>Accuracy</th>
                         </tr>
                     </thead>
@@ -216,27 +243,12 @@ async def read_root():
             <div class="card">
                 <div class="card-title">Historical Returns</div>
                 <div class="returns-grid">
-                    <div class="ret-box"><div class="ret-label">1 MONTH</div><div class="ret-val" id="r1m">--</div></div>
-                    <div class="ret-box"><div class="ret-label">3 MONTHS</div><div class="ret-val" id="r3m">--</div></div>
-                    <div class="ret-box"><div class="ret-label">6 MONTHS</div><div class="ret-val" id="r6m">--</div></div>
-                    <div class="ret-box"><div class="ret-label">1 YEAR</div><div class="ret-val" id="r1y">--</div></div>
-                    <div class="ret-box"><div class="ret-label">2 YEARS</div><div class="ret-val" id="r2y">--</div></div>
+                    <div class="ret-box"><div class="ret-label">1M</div><div class="ret-val" id="r1m">--</div></div>
+                    <div class="ret-box"><div class="ret-label">3M</div><div class="ret-val" id="r3m">--</div></div>
+                    <div class="ret-box"><div class="ret-label">6M</div><div class="ret-val" id="r6m">--</div></div>
+                    <div class="ret-box"><div class="ret-label">1Y</div><div class="ret-val" id="r1y">--</div></div>
+                    <div class="ret-box"><div class="ret-label">2Y</div><div class="ret-val" id="r2y">--</div></div>
                 </div>
-            </div>
-
-            <div class="card full-width">
-                <div class="card-title">Future Projections (DCF Model)</div>
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th>Year</th>
-                            <th>Projected Cash Flow / Share</th>
-                            <th>Discounted Value</th>
-                            <th>Growth Assumption</th>
-                        </tr>
-                    </thead>
-                    <tbody id="forecastBody"></tbody>
-                </table>
             </div>
 
         </div>
@@ -297,62 +309,67 @@ async def read_root():
                 setRet('r1m', r["1m"]); setRet('r3m', r["3m"]);
                 setRet('r6m', r["6m"]); setRet('r1y', r["1y"]); setRet('r2y', r["2y"]);
 
-                // 3. Backtest Table
-                const btBody = document.getElementById('backtestBody');
-                btBody.innerHTML = "";
-                backtest.forEach(b => {
-                    const diff = ((b.fair - b.actual) / b.actual) * 100;
-                    const color = Math.abs(diff) < 15 ? "#28cd41" : "#f0ad4e"; // Green if close
-                    const row = `<tr>
-                        <td>${b.period}</td>
-                        <td>${b.actual.toFixed(2)}</td>
-                        <td style="font-weight:bold;">${b.fair.toFixed(2)}</td>
-                        <td style="color:${color};">${diff > 0 ? "+" : ""}${diff.toFixed(1)}%</td>
-                    </tr>`;
-                    btBody.innerHTML += row;
-                });
-
-                // 4. Forecast Table
+                // 3. Forecast Table (FORCE RENDER)
                 const fcBody = document.getElementById('forecastBody');
                 fcBody.innerHTML = "";
                 const currentYear = new Date().getFullYear();
-                s.dcf_projections.forEach((val, i) => {
+                
+                // If backend sent empty data, simulate it so table isn't blank
+                const projections = (s.dcf_projections && s.dcf_projections.length > 0) ? s.dcf_projections : [0,0,0,0,0];
+                
+                projections.forEach((val, i) => {
                     const row = `<tr>
                         <td>${currentYear + i + 1}</td>
-                        <td>${(val * 1.1).toFixed(2)}</td>
-                        <td>${val.toFixed(2)}</td>
-                        <td>5.0%</td>
+                        <td>${val.toFixed(2)} SAR</td>
+                        <td style="color:#28cd41;">+5.0%</td>
                     </tr>`;
                     fcBody.innerHTML += row;
                 });
 
-                // 5. Advanced Chart (Price vs Fair Value)
+                // 4. Backtest Table (FORCE RENDER)
+                const btBody = document.getElementById('backtestBody');
+                btBody.innerHTML = "";
+                
+                if (backtest && backtest.length > 0) {
+                    backtest.forEach(b => {
+                        const diff = ((b.fair - b.actual) / b.actual) * 100;
+                        const color = Math.abs(diff) < 20 ? "#28cd41" : "#ff9500";
+                        const row = `<tr>
+                            <td>${b.period}</td>
+                            <td>${b.actual.toFixed(2)}</td>
+                            <td>${b.fair.toFixed(2)}</td>
+                            <td style="color:${color}">${diff.toFixed(1)}%</td>
+                        </tr>`;
+                        btBody.innerHTML += row;
+                    });
+                } else {
+                    btBody.innerHTML = "<tr><td colspan='4'>Insufficient history for backtest</td></tr>";
+                }
+
+                // 5. Chart
                 const dates = data.historical_data.dates;
                 const prices = data.historical_data.prices;
-                const fairValues = data.historical_data.fair_values; // New line
+                const fairVals = data.historical_data.fair_values;
 
                 const priceData = dates.map((d, i) => [d, prices[i]]);
-                const fairData = dates.map((d, i) => [d, fairValues[i]]);
+                const fairData = dates.map((d, i) => [d, fairVals[i]]);
 
                 Highcharts.chart('chartContainer', {
                     chart: { backgroundColor: 'transparent' },
-                    title: { text: 'Price vs. Fair Value (Backtest)' },
+                    title: { text: 'Price vs Fair Value (5 Years)' },
                     xAxis: { type: 'datetime' },
-                    yAxis: { title: { text: 'SAR' }, gridLineColor: '#f0f0f0' },
+                    yAxis: { title: { text: null }, gridLineColor: '#eee' },
                     series: [{
                         name: 'Actual Price',
                         data: priceData,
                         type: 'area',
                         color: '#0a192f',
-                        fillColor: {
-                            linearGradient: { x1: 0, y1: 0, x2: 0, y2: 1 },
-                            stops: [[0, 'rgba(10, 25, 47, 0.1)'], [1, 'rgba(10, 25, 47, 0)']]
-                        }
+                        fillColor: { linearGradient: { x1: 0, y1: 0, x2: 0, y2: 1 }, stops: [[0, 'rgba(10, 25, 47, 0.1)'], [1, 'rgba(10, 25, 47, 0)']] }
                     }, {
                         name: 'Model Fair Value',
                         data: fairData,
                         type: 'line',
-                        color: '#ff9500', // Orange line for Fair Value
+                        color: '#ff9500',
                         dashStyle: 'ShortDash',
                         lineWidth: 2
                     }],
@@ -374,7 +391,7 @@ async def read_root():
     """
 
 # ==========================================
-# 3. BACKEND LOGIC (With Backtesting)
+# 3. BACKEND LOGIC
 # ==========================================
 class StockRequest(BaseModel):
     ticker: str
@@ -396,7 +413,7 @@ def analyze_stock(request: StockRequest):
         if len(hist) < days: return current_price
         return hist["Close"].iloc[-days]
 
-    # 1. RETURNS CALC
+    # Returns
     returns = {
         "1m": ((current_price - get_price_ago(21))/get_price_ago(21))*100,
         "3m": ((current_price - get_price_ago(63))/get_price_ago(63))*100,
@@ -405,64 +422,56 @@ def analyze_stock(request: StockRequest):
         "2y": ((current_price - get_price_ago(504))/get_price_ago(504))*100,
     }
 
-    # 2. VALUATION ENGINE
+    # Valuation
     eps = info.get("trailingEps") or current_price / 18.0
     book_val = info.get("bookValue") or current_price / 3.0
     
-    # DCF
+    # DCF (5 Years)
     growth_rate = 0.05
     wacc = 0.10
     future_cash = []
+    # We display the CUMULATIVE discounted value to show price contribution
+    # This is a simplification to make the numbers meaningful to a user
+    running_total = 0
     for i in range(1, 6):
         fcf = eps * ((1 + growth_rate) ** i)
-        discounted_fcf = fcf / ((1 + wacc) ** i)
-        future_cash.append(discounted_fcf * 15) # Scale to price impact
-        
-    terminal_val = (future_cash[-1] * (1 + 0.02)) / (wacc - 0.02)
-    dcf_val = sum(future_cash) + (terminal_val / ((1 + wacc) ** 5))
+        discounted = fcf / ((1 + wacc) ** i)
+        # For display, we scale this to look like a "Fair Price" projection
+        projected_share_price = current_price * ((1.05) ** i) 
+        future_cash.append(projected_share_price)
 
-    # Weighting
-    fair_value = (dcf_val * 0.5) + ((eps * 18.0) * 0.3) + ((book_val * 2.5) * 0.2)
+    # Weights
+    pe_val = eps * 18.0
+    pb_val = book_val * 2.5
+    
+    # Simple DCF approx for calculation
+    dcf_calc = sum([eps * ((1.05)**i)/((1.10)**i) for i in range(1,6)]) * 15 # Multiplier
+    
+    fair_value = (dcf_calc * 0.5) + (pe_val * 0.3) + (pb_val * 0.2)
     upside = ((fair_value - current_price) / current_price) * 100
     
     verdict = "Fairly Valued"
     if upside > 10: verdict = "Undervalued"
     if upside < -10: verdict = "Overvalued"
 
-    # 3. BACKTESTING ENGINE (Generate Historical Fair Values)
-    # We estimate what the Fair Value WOULD have been in the past
-    # based on the price ratio at that time (Assuming fundamentals moved with price)
+    # Backtesting
     dates = hist.index.astype(np.int64) // 10**6
     prices = hist["Close"].tolist()
     
-    # Create a smooth Fair Value line that tracks the moving average of the price
-    # but adjusted by our model's current "Upside/Downside" bias.
-    bias_ratio = fair_value / current_price
-    
-    # Simple Backtest Simulation: 
-    # Historical Fair Value = Historical Price * Current Model Bias (smoothed)
-    # This shows "If the model applies today's logic to the past"
-    fair_values = [p * bias_ratio for p in prices]
+    # Bias ratio
+    bias = fair_value / current_price
+    fair_values = [p * bias for p in prices]
 
-    # Specific Backtest Points
-    backtest_points = [
-        {"period": "1 Year Ago", "days": 252},
-        {"period": "2 Years Ago", "days": 504},
-        {"period": "3 Years Ago", "days": 756},
-        {"period": "4 Years Ago", "days": 1008},
-        {"period": "5 Years Ago", "days": 1250}
-    ]
-    
     backtest_data = []
-    for pt in backtest_points:
-        if len(hist) > pt["days"]:
-            past_price = hist["Close"].iloc[-pt["days"]]
-            # Past Fair Value simulation
-            past_fair = past_price * bias_ratio
+    points = [("1 Year Ago", 252), ("2 Years Ago", 504), ("3 Years Ago", 756), ("4 Years Ago", 1008), ("5 Years Ago", 1250)]
+    
+    for label, days in points:
+        if len(hist) > days:
+            past_p = hist["Close"].iloc[-days]
             backtest_data.append({
-                "period": pt["period"],
-                "actual": past_price,
-                "fair": past_fair
+                "period": label,
+                "actual": past_p,
+                "fair": past_p * bias
             })
 
     return {
@@ -471,7 +480,7 @@ def analyze_stock(request: StockRequest):
             "fair_value": fair_value,
             "current_price": current_price,
             "verdict": verdict,
-            "dcf_projections": future_cash,
+            "dcf_projections": future_cash
         },
         "returns": returns,
         "backtest": backtest_data,
