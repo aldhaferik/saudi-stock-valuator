@@ -639,7 +639,7 @@ def analyze_stock(request: StockRequest):
     E = float(mcap)
 
     # 3) Risk-free rate (EconDB)
-   try:
+    try:
     rf = fetcher.fetch_saudi_risk_free_tradingeconomics()
 except Exception as e:
     return {
