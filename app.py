@@ -104,42 +104,54 @@ class DataFetcher:
 
     def fetch_saudi_risk_free_tradingeconomics(self) -> float:
         """
-        Uses TradingEconomics free API to get Saudi 10-year government bond yield.
-        No API key required (guest access).
+        TradingEconomics bonds snapshot endpoint (documented).
+        We request 10Y bonds and then pick Saudi Arabia from the returned list.
+        Docs: /markets/bond?c=API_KEY&type=10Y
         """
-        url = "https://api.tradingeconomics.com/bonds/country/SaudiArabia"
-        params = {"c": "guest:guest"}
+        url = "https://api.tradingeconomics.com/markets/bond"
+        params = {
+        "c": "guest:guest",  # free guest access (may be rate-limited)
+        "type": "10Y",
+        "f": "json",
+        }
 
         r = requests.get(url, params=params, headers=self._headers(), timeout=10)
-        if r.status_code != 200:
-            raise ValueError(
-                f"TradingEconomics bond yield API failed ({r.status_code})"
-            )
+    if r.status_code != 200:
+        raise ValueError(f"TradingEconomics bond API failed ({r.status_code})")
 
         data = r.json()
-        if not isinstance(data, list):
-            raise ValueError("Unexpected TradingEconomics response format")
+    if not isinstance(data, list):
+        raise ValueError("Unexpected TradingEconomics response format (expected a list).")
 
-        ten_year_yield = None
-        for item in data:
-            maturity = str(item.get("Maturity", "")).lower()
-            if "10" in maturity and item.get("Yield") is not None:
-                ten_year_yield = float(item["Yield"])
-                break
+        # Look for Saudi 10Y
+        candidates = []
+    for item in data:
+        country = str(item.get("Country", "")).strip().lower()
+        name = str(item.get("Name", "")).strip().lower()
+        # Some entries may label it as "Saudi Arabia" in Country, and "Saudi Arabia 10Y" in Name
+        if country == "saudi arabia" or "saudi" in name:
+            # Prefer 'Last' then 'Close'
+            y = item.get("Last", None)
+            if y is None:
+                y = item.get("Close", None)
+            if y is not None:
+                candidates.append(float(y))
 
-        if ten_year_yield is None:
-            raise ValueError(
-                "Could not find 10-year Saudi bond yield in TradingEconomics response"
-            )
+    if not candidates:
+        raise ValueError("Saudi Arabia 10Y yield not found in TradingEconomics 10Y bond snapshot response.")
+
+        # Use the first found (usually only one)
+        ten_y_percent = candidates[0]
 
         # Convert percent to decimal
-        rf = ten_year_yield / 100.0
+        rf = ten_y_percent / 100.0
 
-        # Sanity bounds (not finance assumptions, just error guards)
-        if rf <= 0 or rf > 0.50:
-            raise ValueError(f"Risk-free rate out of bounds: {rf}")
+        # sanity guard only
+    if rf <= 0 or rf > 0.50:
+        raise ValueError(f"Risk-free rate out of bounds after parsing: {rf}")
 
-        return rf
+    return rf
+
 # =========================================================
 # 2) UI (unchanged)
 # =========================================================
