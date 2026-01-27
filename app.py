@@ -103,42 +103,42 @@ class DataFetcher:
         }
 
     def fetch_saudi_risk_free_tradingeconomics(self) -> float:
-    url = "https://api.tradingeconomics.com/markets/bond"
-    params = {
+        url = "https://api.tradingeconomics.com/markets/bond"
+        params = {
         "c": "guest:guest",
         "type": "10Y",
         "f": "json",
-    }
+        }
 
-    r = requests.get(url, params=params, headers=self._headers(), timeout=10)
-    if r.status_code != 200:
-        raise ValueError(f"TradingEconomics bond API failed ({r.status_code})")
+        r = requests.get(url, params=params, headers=self._headers(), timeout=10)
+        if r.status_code != 200:
+            raise ValueError(f"TradingEconomics bond API failed ({r.status_code})")
 
-    data = r.json()
-    if not isinstance(data, list):
-        raise ValueError("Unexpected TradingEconomics response format")
+        data = r.json()
+        if not isinstance(data, list):
+            raise ValueError("Unexpected TradingEconomics response format")
 
-    ten_y_percent = None
-    for item in data:
-        country = str(item.get("Country", "")).lower()
-        name = str(item.get("Name", "")).lower()
-        if country == "saudi arabia" or "saudi" in name:
-            y = item.get("Last") or item.get("Close")
-            if y is not None:
-                ten_y_percent = float(y)
-                break
+        ten_y_percent = None
+        for item in data:
+            country = str(item.get("Country", "")).lower()
+            name = str(item.get("Name", "")).lower()
+            if country == "saudi arabia" or "saudi" in name:
+                y = item.get("Last") or item.get("Close")
+                if y is not None:
+                    ten_y_percent = float(y)
+                    break
 
-    if ten_y_percent is None:
-        raise ValueError("Saudi Arabia 10Y yield not found")
+        if ten_y_percent is None:
+            raise ValueError("Saudi Arabia 10Y yield not found")
 
     # Convert percent to decimal
-    rf = ten_y_percent / 100.0
+        rf = ten_y_percent / 100.0
 
     # sanity guard only
-    if rf <= 0 or rf > 0.50:
-        raise ValueError(f"Risk-free rate out of bounds after parsing: {rf}")
+        if rf <= 0 or rf > 0.50:
+            raise ValueError(f"Risk-free rate out of bounds after parsing: {rf}")
 
-    return rf
+        return rf
 
 
 # =========================================================
