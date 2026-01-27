@@ -53,6 +53,7 @@ class DataFetcher:
             
             if not hist.empty:
                 info = stock.info
+                # Check for valid price
                 if info.get("currentPrice") or hist["Close"].iloc[-1]:
                     return {"history": hist, "info": info, "source": "Yahoo Finance"}
         except: pass
@@ -89,7 +90,7 @@ class DataFetcher:
                     
                     if price_div:
                         price = float(price_div.text.replace("SAR", "").replace(",", "").strip())
-                        # Generate Synthetic History
+                        # Synthetic History
                         dates = pd.date_range(end=datetime.now(), periods=1250)
                         prices = [price] * 1250
                         hist = pd.DataFrame({"Close": prices}, index=dates)
@@ -157,7 +158,8 @@ async def read_root():
             .fv-big { font-size: 48px; font-weight: 800; color: var(--accent); }
             .fv-sub { font-size: 13px; color: #888; }
             .sector-tag { font-size: 11px; background: #e0f2f1; color: #00695c; padding: 4px 8px; border-radius: 4px; display:inline-block; margin-top:5px; }
-            
+            .dyn-badge { font-size: 9px; background: #333; color: #fff; padding: 2px 5px; border-radius: 3px; margin-left: 5px; vertical-align: middle; }
+
             .fv-row { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #f0f0f0; }
             .fv-row:last-child { border-bottom: none; }
             .fv-label { font-size: 14px; color: #555; }
@@ -201,8 +203,8 @@ async def read_root():
 
         <div class="loading" id="loading">
             <div class="spinner"></div>
-            <h3>Running Machine Learning Solver...</h3>
-            <p style="color:#666; font-size:14px;">Minimizing error against 5-year price history</p>
+            <h3>Running Dynamic Sector Analysis...</h3>
+            <p style="color:#666; font-size:14px;">Optimizing WACC and Growth against Real-Time Consensus</p>
         </div>
 
         <div id="error" style="display:none; padding: 15px; background: #ffebee; color: #c62828; border-radius: 8px; margin-bottom: 20px;"></div>
@@ -229,8 +231,8 @@ async def read_root():
                         <div class="stat-box"><div class="stat-label">Market Cap</div><div class="stat-val" id="mcap">--</div></div>
                         <div class="stat-box"><div class="stat-label">P/E Ratio</div><div class="stat-val" id="pe">--</div></div>
                         <div class="stat-box"><div class="stat-label">EPS (TTM)</div><div class="stat-val" id="eps">--</div></div>
-                        <div class="stat-box"><div class="stat-label">Beta (Risk)</div><div class="stat-val" id="beta">--</div></div>
-                        <div class="stat-box"><div class="stat-label">Analyst Growth</div><div class="stat-val" id="growth">--</div></div>
+                        <div class="stat-box"><div class="stat-label">Beta <span id="beta_tag"></span></div><div class="stat-val" id="beta">--</div></div>
+                        <div class="stat-box"><div class="stat-label">Growth <span id="growth_tag"></span></div><div class="stat-val" id="growth">--</div></div>
                         <div class="stat-box"><div class="stat-label">Book Value</div><div class="stat-val" id="book">--</div></div>
                     </div>
                 </div>
@@ -239,7 +241,7 @@ async def read_root():
                     <div class="card-title">OPTIMIZED FAIR VALUE</div>
                     <div class="fv-header">
                         <div class="fv-big" id="fair">--</div>
-                        <div class="fv-sub">AI Best-Fit Target Price</div>
+                        <div class="fv-sub">Dynamic Target Price</div>
                         <div id="sectorMsg" class="sector-tag">--</div>
                     </div>
                     
@@ -265,17 +267,13 @@ async def read_root():
                     </div>
                     <div class="fv-row">
                         <div>
-                            <span class="fv-label">P/B Model</span>
+                            <span class="fv-label">P/B Asset Model</span>
                             <div class="weight-container"><div id="w_pb_bar" class="weight-bar"><div class="weight-fill"></div></div></div>
                         </div>
                         <div style="text-align:right;">
                             <span class="fv-num" id="pb_val">--</span>
                             <div style="font-size:10px; color:#aaa;" id="w_pb_txt">--</div>
                         </div>
-                    </div>
-                    
-                    <div style="font-size:10px; color:#1565c0; background:#e3f2fd; padding:8px; border-radius:6px; margin-top:20px; text-align:center;">
-                        AI Optimization found this combination minimizes 5-year tracking error.
                     </div>
                 </div>
             </div>
@@ -392,10 +390,17 @@ async def read_root():
                 document.getElementById('growth').innerText = (m.growth_rate * 100).toFixed(1) + "%";
                 document.getElementById('book').innerText = fmt(m.book_value);
                 
-                // 4. Dynamic Info Display
                 document.getElementById('wacc_display').innerText = (m.wacc * 100).toFixed(1) + "%";
-                
-                // 5. Weights
+
+                // Dynamic Tags (badges)
+                if (data.is_dynamic_beta) {
+                    document.getElementById('beta_tag').innerHTML = '<span class="dyn-badge">LIVE</span>';
+                }
+                if (data.is_dynamic_growth) {
+                    document.getElementById('growth_tag').innerHTML = '<span class="dyn-badge">LIVE</span>';
+                }
+
+                // 4. Weights
                 document.getElementById('dcf_val').innerText = s.model_breakdown.dcf.toFixed(2);
                 document.getElementById('pe_val').innerText = s.model_breakdown.pe_model.toFixed(2);
                 document.getElementById('pb_val').innerText = s.model_breakdown.pb_model.toFixed(2);
@@ -407,7 +412,7 @@ async def read_root():
                 };
                 setW('dcf', weights.dcf); setW('pe', weights.pe); setW('pb', weights.pb);
 
-                // 6. Returns
+                // 5. Returns
                 const setRet = (id, val) => {
                     const el = document.getElementById(id);
                     if (val === null) { el.innerText = "--"; return; }
@@ -417,7 +422,7 @@ async def read_root():
                 setRet('r1m', r["1m"]); setRet('r3m', r["3m"]);
                 setRet('r6m', r["6m"]); setRet('r1y', r["1y"]); setRet('r2y', r["2y"]);
 
-                // 7. Forecast
+                // 6. Forecast
                 const fcBody = document.getElementById('forecastBody');
                 fcBody.innerHTML = "";
                 const currentYear = new Date().getFullYear();
@@ -431,7 +436,7 @@ async def read_root():
                     fcBody.innerHTML += row;
                 });
 
-                // 8. Backtest
+                // 7. Backtest
                 const btBody = document.getElementById('backtestBody');
                 btBody.innerHTML = "";
                 backtest.forEach(b => {
@@ -446,7 +451,7 @@ async def read_root():
                     btBody.innerHTML += row;
                 });
 
-                // 9. Chart
+                // 8. Chart
                 const dates = data.historical_data.dates;
                 const prices = data.historical_data.prices;
                 const fairVals = data.historical_data.fair_values;
@@ -487,7 +492,7 @@ async def read_root():
     """
 
 # ==========================================
-# 3. DYNAMIC OPTIMIZATION ENGINE
+# 3. DYNAMIC + SECTOR HYBRID ENGINE
 # ==========================================
 class StockRequest(BaseModel):
     ticker: str
@@ -502,45 +507,64 @@ def analyze_stock(request: StockRequest):
     info = data["info"]
     current_price = hist["Close"].iloc[-1]
     
-    # --- 1. DETECT SECTOR & SET CONSTANTS ---
-    sector = info.get("sector", "Unknown")
+    # --- 1. DETERMINE SECTOR DEFAULTS (Physics) ---
+    sector = info.get("sector", "Unknown").lower()
     
-    # A. DYNAMIC WACC
+    # Defaults
+    s_wacc = 0.10
+    s_growth = 0.05
+    s_pe = 16.0
+    
+    if "bank" in sector or "financial" in sector:
+        s_pe, s_wacc, s_growth = 18.0, 0.09, 0.05
+    elif "energy" in sector or "oil" in sector:
+        s_pe, s_wacc, s_growth = 14.0, 0.11, 0.03
+    elif "technology" in sector:
+        s_pe, s_wacc, s_growth = 25.0, 0.12, 0.08
+    elif "material" in sector or "construction" in sector:
+        s_pe, s_wacc, s_growth = 13.0, 0.11, 0.04
+    elif "reit" in sector or "real estate" in sector:
+        s_pe, s_wacc, s_growth = 22.0, 0.09, 0.03
+    elif "food" in sector or "consumer" in sector:
+        s_pe, s_wacc, s_growth = 22.0, 0.08, 0.06
+    elif "telecom" in sector:
+        s_pe, s_wacc, s_growth = 15.0, 0.08, 0.03
+
+    # --- 2. DYNAMIC OVERRIDES (The "Thorough" Part) ---
+    is_dynamic_beta = False
+    is_dynamic_growth = False
+    
+    # A. WACC Calculation (CAPM)
     rf_rate = 0.045
     mrp = 0.057
     beta = info.get('beta')
+    
     if beta and beta > 0:
         wacc = rf_rate + (beta * mrp)
+        is_dynamic_beta = True
     else:
-        # Fallback WACC
-        if "Financial" in sector: wacc = 0.09
-        elif "Technology" in sector: wacc = 0.12
-        else: wacc = 0.10
+        wacc = s_wacc # Fallback to sector
         beta = (wacc - rf_rate) / mrp
 
-    # B. DYNAMIC GROWTH
+    # B. Growth Calculation (Analyst Consensus)
     g_est = info.get('earningsGrowth')
     if g_est:
         growth_rate = g_est
+        # Safety caps
         if growth_rate > 0.15: growth_rate = 0.15
         if growth_rate < 0.02: growth_rate = 0.02
+        is_dynamic_growth = True
     else:
-        # Fallback Growth
-        if "Technology" in sector: growth_rate = 0.08
-        elif "Financial" in sector: growth_rate = 0.05
-        else: growth_rate = 0.03
+        growth_rate = s_growth # Fallback to sector
 
-    # C. DYNAMIC PE TARGET
+    # C. PE Target (Forward PE)
     fwd_pe = info.get('forwardPE')
     if fwd_pe and fwd_pe > 5 and fwd_pe < 50:
         target_pe = fwd_pe
     else:
-        # Fallback Sector PE
-        if "Financial" in sector: target_pe = 19.0
-        elif "Technology" in sector: target_pe = 25.0
-        else: target_pe = 16.0
+        target_pe = s_pe # Fallback to sector
 
-    # --- 2. RECONSTRUCT HISTORY ---
+    # --- 3. RECONSTRUCT HISTORY ---
     dates = hist.index.astype(np.int64) // 10**6
     prices = hist["Close"].tolist()
     
@@ -552,7 +576,7 @@ def analyze_stock(request: StockRequest):
     hist_eps = [eps_curr / ((1 + growth_rate) ** y) for y in years_ago_array]
     hist_book = [book_curr / ((1 + growth_rate) ** y) for y in years_ago_array]
 
-    # --- 3. GENERATE STREAMS ---
+    # --- 4. GENERATE STREAMS ---
     # Implied Multiple for DCF
     try:
         implied_dcf_multiple = (1 + growth_rate) / (wacc - growth_rate)
@@ -564,12 +588,11 @@ def analyze_stock(request: StockRequest):
     stream_pe = [e * target_pe for e in hist_eps]
     stream_pb = [b * 2.2 for b in hist_book]
 
-    # --- 4. THE SOLVER (No Defaults) ---
+    # --- 5. THE SOLVER ---
     best_error = float('inf')
     best_weights = (0,0,0)
     
-    # We step by 10% (0.1) increments for precision
-    steps = [x / 10.0 for x in range(11)] # 0.0, 0.1 ... 1.0
+    steps = [x / 10.0 for x in range(11)]
     
     for w1 in steps:
         for w2 in steps:
@@ -588,7 +611,7 @@ def analyze_stock(request: StockRequest):
                 best_error = avg_error
                 best_weights = (w1, w2, w3)
 
-    # --- 5. FINAL CALCULATION ---
+    # --- 6. FINAL CALCULATION ---
     w_dcf, w_pe, w_pb = best_weights
     
     future_cash = []
@@ -612,7 +635,7 @@ def analyze_stock(request: StockRequest):
     if upside > 10: verdict = "Undervalued"
     if upside < -10: verdict = "Overvalued"
 
-    # --- 6. OUTPUT DATA ---
+    # --- 7. OUTPUT DATA ---
     fair_values = []
     for i in range(n_days):
         val = (w_dcf * stream_dcf[i]) + (w_pe * stream_pe[i]) + (w_pb * stream_pb[i])
@@ -652,7 +675,7 @@ def analyze_stock(request: StockRequest):
             "verdict": verdict,
             "upside_percent": upside,
             "dcf_projections": future_cash,
-            "sector": sector,
+            "sector": sector.title(),
             "model_breakdown": {
                 "dcf": dcf_total,
                 "pe_model": pe_val_today,
@@ -665,9 +688,9 @@ def analyze_stock(request: StockRequest):
             "pe_ratio": pe_rat,
             "eps": eps_curr,
             "book_value": book_curr,
-            "beta": beta,
-            "wacc": wacc,
             "growth_rate": growth_rate,
+            "wacc": wacc,
+            "beta": beta,
             "high52": max(prices[-252:]),
             "low52": min(prices[-252:])
         },
@@ -678,7 +701,9 @@ def analyze_stock(request: StockRequest):
             "prices": prices,
             "fair_values": fair_values
         },
-        "source_used": data["source"]
+        "source_used": data["source"],
+        "is_dynamic_beta": is_dynamic_beta,
+        "is_dynamic_growth": is_dynamic_growth
     }
 
 if __name__ == "__main__":
