@@ -47,8 +47,9 @@ class DataFetcher:
     - financial statements (income statement, balance sheet, cash flow)
     - shares outstanding / market cap when available
     - market index history (TASI) for beta and market return
-    - risk-free rate series from EconDB
+    - risk-free rate from TradingEconomics (free)
     """
+
     def __init__(self):
         self.user_agents = [
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/120.0.0.0 Safari/537.36",
@@ -73,20 +74,11 @@ class DataFetcher:
         """
         import yfinance as yf
         stock = yf.Ticker(ticker)
-        info = {}
+
         try:
             info = stock.info or {}
         except Exception:
             info = {}
-
-        # yfinance provides annual statements in these:
-        # - financials (income statement)
-        # - balance_sheet
-        # - cashflow
-        # Some tickers return quarterly via .quarterly_* but we'll stick to annual.
-        fin = None
-        bs = None
-        cf = None
 
         try:
             fin = stock.financials
@@ -103,52 +95,51 @@ class DataFetcher:
         except Exception:
             cf = None
 
-        return {"info": info, "financials": fin, "balance_sheet": bs, "cashflow": cf}
+        return {
+            "info": info,
+            "financials": fin,
+            "balance_sheet": bs,
+            "cashflow": cf,
+        }
 
-    def fetch_risk_free_rate(self) -> float:
+    def fetch_saudi_risk_free_tradingeconomics(self) -> float:
         """
-        EconDB API: https://www.econdb.com/api/series/{series_id}/
-        We use Y10YDSA as Saudi long-term yield series. :contentReference[oaicite:3]{index=3}
-        Returns a decimal rate (e.g., 0.045).
+        Uses TradingEconomics free API to get Saudi 10-year government bond yield.
+        No API key required (guest access).
         """
-        url = f"https://www.econdb.com/api/series/{ECONDB_RF_SERIES}/"
-        r = requests.get(url, headers=self._headers(), timeout=8)
+        url = "https://api.tradingeconomics.com/bonds/country/SaudiArabia"
+        params = {"c": "guest:guest"}
+
+        r = requests.get(url, params=params, headers=self._headers(), timeout=10)
         if r.status_code != 200:
-            raise ValueError(f"EconDB RF request failed ({r.status_code}).")
+            raise ValueError(
+                f"TradingEconomics bond yield API failed ({r.status_code})"
+            )
+
         data = r.json()
+        if not isinstance(data, list):
+            raise ValueError("Unexpected TradingEconomics response format")
 
-        # EconDB format commonly includes "data" array of [date, value] pairs
-        # We handle a few plausible schemas safely.
-        last_val = None
+        ten_year_yield = None
+        for item in data:
+            maturity = str(item.get("Maturity", "")).lower()
+            if "10" in maturity and item.get("Yield") is not None:
+                ten_year_yield = float(item["Yield"])
+                break
 
-        if isinstance(data, dict):
-            if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
-                # data["data"] may be list of [date, value]
-                last = data["data"][-1]
-                if isinstance(last, (list, tuple)) and len(last) >= 2:
-                    last_val = last[1]
-            elif "values" in data and isinstance(data["values"], list) and len(data["values"]) > 0:
-                last_val = data["values"][-1]
-            elif "observations" in data and isinstance(data["observations"], list) and len(data["observations"]) > 0:
-                obs = data["observations"][-1]
-                if isinstance(obs, dict) and "value" in obs:
-                    last_val = obs["value"]
+        if ten_year_yield is None:
+            raise ValueError(
+                "Could not find 10-year Saudi bond yield in TradingEconomics response"
+            )
 
-        if last_val is None:
-            raise ValueError("Could not parse EconDB RF series response.")
+        # Convert percent to decimal
+        rf = ten_year_yield / 100.0
 
-        # Many yield series are in percent; we detect and convert if needed.
-        # If last_val is 4.5 -> 0.045, if 0.045 -> keep.
-        try:
-            last_val = float(last_val)
-        except Exception:
-            raise ValueError("Risk-free value is not numeric.")
-
-        rf = last_val / 100.0 if last_val > 1.0 else last_val
+        # Sanity bounds (not finance assumptions, just error guards)
         if rf <= 0 or rf > 0.50:
-            raise ValueError(f"Risk-free rate out of sanity bounds after parsing: {rf}")
-        return rf
+            raise ValueError(f"Risk-free rate out of bounds: {rf}")
 
+        return rf
 # =========================================================
 # 2) UI (unchanged)
 # =========================================================
@@ -648,10 +639,12 @@ def analyze_stock(request: StockRequest):
     E = float(mcap)
 
     # 3) Risk-free rate (EconDB)
-    try:
-        rf = fetcher.fetch_risk_free_rate()
-    except Exception as e:
-        return {"error": f"Could not fetch Saudi risk-free rate from EconDB series {ECONDB_RF_SERIES}: {str(e)}"}  # :contentReference[oaicite:5]{index=5}
+   try:
+    rf = fetcher.fetch_saudi_risk_free_tradingeconomics()
+except Exception as e:
+    return {
+        "error": f"Could not fetch Saudi risk-free rate from TradingEconomics: {str(e)}"
+    }
 
     # 4) Expected market return and ERP from historical TASI
     try:
