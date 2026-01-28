@@ -1,11 +1,9 @@
 # app.py
 from __future__ import annotations
-
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-
 import os
 import math
 import requests
