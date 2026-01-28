@@ -472,7 +472,6 @@ def solver_best_weights(
 ) -> dict:
     """
     Grid-search weights on simplex for available models, minimize MAPE on sampled points.
-
     model_matrix shape: (n_models, n_days), aligned to actual_prices
     available_mask: bool array length n_models, True if that model is usable (finite)
     """
