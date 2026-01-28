@@ -597,6 +597,29 @@ def _beta_regression(stock_prices: pd.Series, market_prices: pd.Series) -> float
         raise ValueError("Market variance is zero; cannot compute beta.")
     return float(cov / var)
 
+def _safe_get_line_contains(df: pd.DataFrame, must_contain: list[str], col) -> float | None:
+    """
+    Finds a row where the normalized label contains all substrings in must_contain.
+    Example: must_contain=["operating","income"]
+    """
+    if df is None or df.empty or col is None:
+        return None
+
+    def norm(s: str) -> str:
+        return "".join(ch.lower() for ch in str(s) if ch.isalnum())
+
+    tokens = [norm(x) for x in must_contain]
+    for lab in df.index:
+        nlab = norm(lab)
+        if all(t in nlab for t in tokens):
+            val = df.loc[lab, col]
+            if pd.isna(val):
+                continue
+            try:
+                return float(val)
+            except Exception:
+                continue
+    return None
 
 @app.post("/analyze")
 def analyze_stock(request: StockRequest):
