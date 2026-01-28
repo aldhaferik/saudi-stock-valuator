@@ -90,47 +90,59 @@ async def read_root():
         .search-bar { background: var(--card); padding: 15px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); display: flex; gap: 10px; margin-bottom: 25px; }
         input { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; outline: none; }
         button { padding: 12px 25px; background: var(--primary); color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; }
+
         .top-section { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; margin-bottom: 20px; }
         .bottom-section { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
         .full-width { grid-column: span 2; }
+
         .card { background: var(--card); border-radius: 12px; padding: 25px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); position: relative; }
         .card-title { font-size: 13px; font-weight: 700; color: #888; text-transform: uppercase; margin-bottom: 20px; letter-spacing: 0.5px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+
         .header-row { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 15px; }
         .company-name { font-size: 28px; font-weight: 800; color: var(--primary); margin: 0; line-height: 1.2; }
         .ticker-tag { background: #eee; padding: 4px 8px; border-radius: 4px; font-family: monospace; color: #555; font-size: 14px; }
         .big-price { font-size: 42px; font-weight: 800; color: #333; text-align: right; }
         .price-sub { font-size: 13px; color: #888; text-align: right; margin-top: -5px; }
+
         .verdict-bar { padding: 15px; border-radius: 8px; text-align: center; font-weight: 800; text-transform: uppercase; font-size: 16px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
         .v-red { background: #ffebee; color: #c62828; border: 1px solid #ffcdd2; }
         .v-green { background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
         .v-gray { background: #f5f5f5; color: #616161; border: 1px solid #e0e0e0; }
+
         .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; }
         .stat-box { background: #f8f9fa; padding: 12px; border-radius: 8px; }
         .stat-label { font-size: 11px; font-weight: 700; color: #888; text-transform: uppercase; margin-bottom: 5px; }
         .stat-val { font-size: 16px; font-weight: 600; color: #333; }
+
         .fv-header { text-align: center; margin-bottom: 20px; }
         .fv-big { font-size: 48px; font-weight: 800; color: var(--accent); }
         .fv-sub { font-size: 13px; color: #888; }
         .sector-tag { font-size: 11px; background: #e0f2f1; color: #00695c; padding: 4px 8px; border-radius: 4px; display:inline-block; margin-top:5px; }
         .dyn-badge { font-size: 9px; background: #333; color: #fff; padding: 2px 5px; border-radius: 3px; margin-left: 5px; vertical-align: middle; }
+
         .fv-row { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #f0f0f0; }
         .fv-row:last-child { border-bottom: none; }
         .fv-label { font-size: 14px; color: #555; }
         .fv-num { font-weight: 700; color: #333; }
+
         .weight-container { margin-top: 5px; }
         .weight-bar { height: 4px; background: #eee; border-radius: 2px; width: 100%; overflow: hidden; }
-        .weight-fill { height: 100%; background: #007aff; }
+        .weight-fill { height: 100%; background: #007aff; width: 0%; }
+
         .data-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         .data-table th { text-align: left; font-size: 11px; color: #888; padding-bottom: 8px; border-bottom: 1px solid #eee; }
         .data-table td { padding: 10px 0; font-size: 13px; font-weight: 500; border-bottom: 1px solid #f9f9f9; }
+
         .returns-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; text-align: center; }
         .ret-box { background: #f8f9fa; padding: 8px; border-radius: 6px; }
         .ret-label { font-size: 11px; color: #666; margin-bottom: 4px; font-weight: bold; }
         .ret-val { font-size: 14px; font-weight: 600; }
         .pos { color: #28cd41; } .neg { color: #ff3b30; }
+
         .loading { text-align: center; padding: 40px; display: none; }
         .spinner { border: 4px solid #f3f3f3; border-top: 4px solid var(--accent); border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 0 auto 15px; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
         @media (max-width: 900px) {
             .top-section, .bottom-section { grid-template-columns: 1fr; }
             .full-width { grid-column: span 1; }
@@ -138,6 +150,7 @@ async def read_root():
     </style>
 </head>
 <body>
+
 <div class="container">
     <div class="search-bar">
         <input type="text" id="ticker" placeholder="Enter Ticker (e.g. 1120)" />
@@ -149,19 +162,327 @@ async def read_root():
         <h3>Calculating Intrinsic Value...</h3>
         <p style="color:#666; font-size:14px;">Deriving WACC, FCFF, Beta and Growth from Real Data</p>
     </div>
+
+    <div id="error" style="display:none; padding: 15px; background: #ffebee; color: #c62828; border-radius: 8px; margin-bottom: 20px;"></div>
+
+    <div id="dashboard" style="display:none;">
+
+        <div class="top-section">
+            <div class="card">
+                <div class="header-row">
+                    <div>
+                        <h1 class="company-name" id="name">--</h1>
+                        <span class="ticker-tag" id="tickerDisplay">--</span>
+                    </div>
+                    <div>
+                        <div class="big-price" id="price">--</div>
+                        <div class="price-sub">Current Market Price</div>
+                    </div>
+                </div>
+
+                <div id="verdictBar" class="verdict-bar">--</div>
+
+                <div class="stats-grid">
+                    <div class="stat-box"><div class="stat-label">Market Cap</div><div class="stat-val" id="mcap">--</div></div>
+                    <div class="stat-box"><div class="stat-label">P/E Ratio</div><div class="stat-val" id="pe">--</div></div>
+                    <div class="stat-box"><div class="stat-label">EPS (TTM)</div><div class="stat-val" id="eps">--</div></div>
+                    <div class="stat-box"><div class="stat-label">Beta <span id="beta_tag"></span></div><div class="stat-val" id="beta">--</div></div>
+                    <div class="stat-box"><div class="stat-label">Growth <span id="growth_tag"></span></div><div class="stat-val" id="growth">--</div></div>
+                    <div class="stat-box"><div class="stat-label">Book Value</div><div class="stat-val" id="book">--</div></div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-title">FAIR VALUE</div>
+                <div class="fv-header">
+                    <div class="fv-big" id="fair">--</div>
+                    <div class="fv-sub">Model-weighted target</div>
+                    <div id="sectorMsg" class="sector-tag">--</div>
+                </div>
+
+                <div class="fv-row">
+                    <div style="width:70%">
+                        <span class="fv-label">DCF (WACC: <span id="wacc_display">--</span>)</span>
+                        <div class="weight-container">
+                            <div class="weight-bar"><div class="weight-fill" id="w_dcf_fill"></div></div>
+                        </div>
+                    </div>
+                    <div style="text-align:right;">
+                        <span class="fv-num" id="dcf_val">--</span>
+                        <div style="font-size:10px; color:#aaa;" id="w_dcf_txt">--</div>
+                    </div>
+                </div>
+
+                <div class="fv-row">
+                    <div style="width:70%">
+                        <span class="fv-label">Forward P/E Model</span>
+                        <div class="weight-container">
+                            <div class="weight-bar"><div class="weight-fill" id="w_pe_fill"></div></div>
+                        </div>
+                    </div>
+                    <div style="text-align:right;">
+                        <span class="fv-num" id="pe_val">--</span>
+                        <div style="font-size:10px; color:#aaa;" id="w_pe_txt">--</div>
+                    </div>
+                </div>
+
+                <div class="fv-row">
+                    <div style="width:70%">
+                        <span class="fv-label">P/B Asset Model</span>
+                        <div class="weight-container">
+                            <div class="weight-bar"><div class="weight-fill" id="w_pb_fill"></div></div>
+                        </div>
+                    </div>
+                    <div style="text-align:right;">
+                        <span class="fv-num" id="pb_val">--</span>
+                        <div style="font-size:10px; color:#aaa;" id="w_pb_txt">--</div>
+                    </div>
+                </div>
+
+                <div class="fv-row">
+                    <div style="width:70%">
+                        <span class="fv-label">EV/EBITDA Model</span>
+                        <div class="weight-container">
+                            <div class="weight-bar"><div class="weight-fill" id="w_ev_ebitda_fill"></div></div>
+                        </div>
+                    </div>
+                    <div style="text-align:right;">
+                        <span class="fv-num" id="ev_ebitda_val">--</span>
+                        <div style="font-size:10px; color:#aaa;" id="w_ev_ebitda_txt">--</div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <div class="card" style="margin-bottom: 20px;">
+            <div id="chartContainer" style="height: 350px;"></div>
+        </div>
+
+        <div class="bottom-section">
+            <div class="card">
+                <div class="card-title">Solver Performance (Backtest)</div>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Period</th>
+                            <th>Actual Price</th>
+                            <th>Optimized Model</th>
+                            <th>Error</th>
+                        </tr>
+                    </thead>
+                    <tbody id="backtestBody"></tbody>
+                </table>
+            </div>
+
+            <div class="card">
+                <div class="card-title">Historical Returns</div>
+                <div class="returns-grid" style="margin-bottom: 25px;">
+                    <div class="ret-box"><div class="ret-label">1M</div><div class="ret-val" id="r1m">--</div></div>
+                    <div class="ret-box"><div class="ret-label">3M</div><div class="ret-val" id="r3m">--</div></div>
+                    <div class="ret-box"><div class="ret-label">6M</div><div class="ret-val" id="r6m">--</div></div>
+                    <div class="ret-box"><div class="ret-label">1Y</div><div class="ret-val" id="r1y">--</div></div>
+                    <div class="ret-box"><div class="ret-label">2Y</div><div class="ret-val" id="r2y">--</div></div>
+                </div>
+
+                <div class="card-title">Future Projections</div>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Year</th>
+                            <th>Projected Value</th>
+                            <th>Growth</th>
+                        </tr>
+                    </thead>
+                    <tbody id="forecastBody"></tbody>
+                </table>
+            </div>
+        </div>
+
+    </div>
 </div>
 
 <script>
 async function analyze() {
-    // Placeholder: your JS can call your API endpoints here.
-    // Keeping minimal so the Python file remains valid.
-    return;
+    const ticker = document.getElementById('ticker').value;
+    const btn = document.getElementById('btn');
+    const loading = document.getElementById('loading');
+    const dashboard = document.getElementById('dashboard');
+    const err = document.getElementById('error');
+
+    if(!ticker) return;
+
+    dashboard.style.display = 'none';
+    err.style.display = 'none';
+    loading.style.display = 'block';
+    btn.disabled = true;
+
+    try {
+        const res = await fetch('/analyze', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ticker: ticker})
+        });
+
+        const text = await res.text();
+        let data;
+        try { data = JSON.parse(text); }
+        catch (e) { throw new Error("Non-JSON response: " + text.slice(0, 200)); }
+
+        loading.style.display = 'none';
+        btn.disabled = false;
+
+        if (data.error) {
+            err.innerText = data.error;
+            err.style.display = 'block';
+            return;
+        }
+
+        const s = data.valuation_summary;
+        const m = data.metrics;
+        const r = data.returns;
+        const backtest = data.backtest;
+        const weights = data.optimized_weights;
+
+        document.getElementById('name').innerText = s.company_name ?? "--";
+        document.getElementById('tickerDisplay').innerText = ticker.toUpperCase() + ".SR";
+        document.getElementById('price').innerText = (s.current_price ?? 0).toFixed(2);
+        document.getElementById('fair').innerText = (s.fair_value ?? 0).toFixed(2);
+        document.getElementById('sectorMsg').innerText = s.sector ?? "--";
+
+        const vb = document.getElementById('verdictBar');
+        const upside = s.upside_percent ?? 0;
+        const label = (s.verdict ?? "Fairly Valued").toUpperCase();
+        const sign = upside > 0 ? "+" : "";
+        vb.innerText = `${label} (${sign}${Number(upside).toFixed(1)}% Upside)`;
+        vb.className = "verdict-bar " + (label === "UNDERVALUED" ? "v-green" : (label === "OVERVALUED" ? "v-red" : "v-gray"));
+
+        const fmt = (num) => (num === null || num === undefined) ? "N/A" : Number(num).toFixed(2);
+        const fmtBig = (num) => (num === null || num === undefined) ? "N/A" : (Number(num) / 1000000000).toFixed(2) + "B";
+
+        document.getElementById('mcap').innerText = fmtBig(m.market_cap);
+        document.getElementById('pe').innerText = fmt(m.pe_ratio);
+        document.getElementById('eps').innerText = fmt(m.eps);
+        document.getElementById('beta').innerText = (m.beta === null || m.beta === undefined) ? "N/A" : Number(m.beta).toFixed(2);
+        document.getElementById('growth').innerText = (m.growth_rate === null || m.growth_rate === undefined) ? "N/A" : (Number(m.growth_rate) * 100).toFixed(1) + "%";
+        document.getElementById('book').innerText = fmt(m.book_value);
+
+        document.getElementById('wacc_display').innerText =
+            (m.wacc === null || m.wacc === undefined) ? "N/A" : (Number(m.wacc) * 100).toFixed(1) + "%";
+
+        // Tags
+        document.getElementById('beta_tag').innerHTML = '<span class="dyn-badge">LIVE</span>';
+        document.getElementById('growth_tag').innerHTML = '<span class="dyn-badge">LIVE</span>';
+
+        // Model values
+        document.getElementById('dcf_val').innerText = fmt(s.model_breakdown?.dcf);
+        document.getElementById('pe_val').innerText = fmt(s.model_breakdown?.pe_model);
+        document.getElementById('pb_val').innerText = fmt(s.model_breakdown?.pb_model);
+        document.getElementById('ev_ebitda_val').innerText = fmt(s.model_breakdown?.ev_ebitda_model);
+
+        // Weights bars
+        const setW = (key, val) => {
+            const pct = ((val ?? 0) * 100).toFixed(0) + "%";
+            const fill = document.getElementById(`w_${key}_fill`);
+            const txt = document.getElementById(`w_${key}_txt`);
+            if (fill) fill.style.width = pct;
+            if (txt) txt.innerText = "Weight: " + pct;
+        };
+        setW('dcf', weights?.dcf);
+        setW('pe', weights?.pe);
+        setW('pb', weights?.pb);
+        setW('ev_ebitda', weights?.ev_ebitda);
+
+        // Returns
+        const setRet = (id, val) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            if (val === null || val === undefined) { el.innerText = "--"; el.className = "ret-val"; return; }
+            const n = Number(val);
+            el.innerText = (n > 0 ? "+" : "") + n.toFixed(1) + "%";
+            el.className = "ret-val " + (n > 0 ? "pos" : "neg");
+        };
+        setRet('r1m', r?.["1m"]);
+        setRet('r3m', r?.["3m"]);
+        setRet('r6m', r?.["6m"]);
+        setRet('r1y', r?.["1y"]);
+        setRet('r2y', r?.["2y"]);
+
+        // Forecast
+        const fcBody = document.getElementById('forecastBody');
+        if (fcBody) {
+            fcBody.innerHTML = "";
+            const currentYear = new Date().getFullYear();
+            const projections = Array.isArray(s.dcf_projections) ? s.dcf_projections : [];
+            projections.forEach((val, i) => {
+                const row = `<tr>
+                    <td>${currentYear + i + 1}</td>
+                    <td>${Number(val).toFixed(2)} SAR</td>
+                    <td style="color:#28cd41;">+${(Number(m.growth_rate || 0) * 100).toFixed(1)}%</td>
+                </tr>`;
+                fcBody.innerHTML += row;
+            });
+        }
+
+        // Backtest
+        const btBody = document.getElementById('backtestBody');
+        if (btBody) {
+            btBody.innerHTML = "";
+            (Array.isArray(backtest) ? backtest : []).forEach(b => {
+                const actual = Number(b.actual);
+                const model = Number(b.model);
+                const diff = (actual && isFinite(actual)) ? Math.abs((model - actual) / actual) * 100 : 0;
+                const color = diff < 15 ? "#28cd41" : "#f0ad4e";
+                const row = `<tr>
+                    <td>${b.period ?? ""}</td>
+                    <td>${isFinite(actual) ? actual.toFixed(2) : "N/A"}</td>
+                    <td>${isFinite(model) ? model.toFixed(2) : "N/A"}</td>
+                    <td style="color:${color}; font-weight:bold;">${diff.toFixed(1)}%</td>
+                </tr>`;
+                btBody.innerHTML += row;
+            });
+        }
+
+        // Chart
+        const dates = data.historical_data?.dates || [];
+        const prices = data.historical_data?.prices || [];
+        const fairVals = data.historical_data?.fair_values || [];
+
+        if (dates.length && prices.length && fairVals.length) {
+            Highcharts.chart('chartContainer', {
+                chart: { backgroundColor: 'transparent' },
+                title: { text: 'Price vs Optimized Model' },
+                xAxis: { type: 'datetime' },
+                yAxis: { title: { text: null }, gridLineColor: '#eee' },
+                series: [{
+                    name: 'Actual Price',
+                    data: dates.map((d, i) => [d, prices[i]]),
+                    type: 'area'
+                }, {
+                    name: 'Optimized Fair Value',
+                    data: dates.map((d, i) => [d, fairVals[i]]),
+                    type: 'line',
+                    lineWidth: 2
+                }],
+                credits: { enabled: false }
+            });
+        }
+
+        dashboard.style.display = 'block';
+
+    } catch (e) {
+        loading.style.display = 'none';
+        btn.disabled = false;
+        err.innerText = "Error: " + (e?.message || e);
+        err.style.display = 'block';
+    }
 }
 </script>
 
 </body>
 </html>
 """
+
 
 # =========================================================
 # 4) DATA FETCHER (Yahoo primary, Twelve Data / Alpha Vantage price backups)
