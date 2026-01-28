@@ -742,9 +742,97 @@ def analyze_stock(request: StockRequest):
         WACC = wE * Re + wD * Rd * (1.0 - T)
 
         # EBIT
-        EBIT = _safe_get_line(fin, ["EBIT", "Ebit", "Operating Income", "OperatingIncome"], fin_col)
-        if EBIT is None:
-            return {"error": "Missing EBIT / Operating Income in income statement. Cannot compute FCFF."}
+        # --- EBIT / Operating Income (robust) ---
+EBIT = _safe_get_line(fin, [
+    "Ebit", "EBIT",
+    "Operating Income", "OperatingIncome",
+    "Total Operating Income As Reported", "TotalOperatingIncomeAsReported",
+    "Operating Profit", "OperatingProfit"
+], fin_col)
+
+# If direct label matching fails, try "contains" search
+if EBIT is None:
+    EBIT = _safe_get_line_contains(fin, ["operating", "income"], fin_col)
+
+# --- If still missing, use CFO-based FCFF fallback instead of stopping ---
+fcff_method = "EBIT-based"
+if EBIT is None:
+    fcff_method = "CFO-based fallback"
+
+    CFO = _safe_get_line(cf, [
+        "Total Cash From Operating Activities",
+        "TotalCashFromOperatingActivities",
+        "Operating Cash Flow",
+        "OperatingCashFlow",
+        "Cash Flow From Continuing Operating Activities",
+        "CashFlowFromContinuingOperatingActivities"
+    ], cf_col)
+
+    if CFO is None:
+        return {"error": "Missing EBIT/Operating Income AND missing CFO in cashflow. Yahoo fundamentals insufficient for this ticker."}
+
+    CFO = float(CFO)
+
+    # Interest: income statement or cashflow interest paid
+    interest_exp = _safe_get_line(fin, ["Interest Expense", "InterestExpense", "Interest Expense Non Operating"], fin_col)
+    interest_paid = _safe_get_line(cf, ["Interest Paid", "InterestPaid", "Cash Interest Paid", "CashInterestPaid"], cf_col)
+
+    interest_amt = None
+    if interest_exp is not None:
+        interest_amt = float(interest_exp)
+    elif interest_paid is not None:
+        interest_amt = abs(float(interest_paid))
+
+    # If we have no interest number, we can still compute FCFF ≈ CFO - CapEx (but Rd may still be computable from debt only if interest exists)
+    interest_adj = 0.0
+    if interest_amt is not None:
+        interest_adj = interest_amt * (1.0 - T)
+
+    # CapEx (you already compute this later; keep your CapEx extraction but make sure it's available here)
+    CapEx = _safe_get_line(cf, ["Capital Expenditures", "CapitalExpenditures", "Capital Expenditure"], cf_col)
+    if CapEx is None:
+        return {"error": "Missing CapEx in cashflow. Cannot compute FCFF (fallback)."}
+    CapEx = float(CapEx)
+    capex_outflow = -CapEx if CapEx < 0 else CapEx
+
+    FCFF0 = CFO + interest_adj - capex_outflow
+
+    # Growth estimate for fallback: require prior-year cashflow to compute FCFF growth
+    cf_col_prev = _second_most_recent_col(cf)
+    if cf_col_prev is None:
+        return {"error": "EBIT missing; CFO fallback FCFF computed, but only 1 cashflow period available so growth cannot be estimated."}
+
+    CFO_prev = _safe_get_line(cf, [
+        "Total Cash From Operating Activities",
+        "TotalCashFromOperatingActivities",
+        "Operating Cash Flow",
+        "OperatingCashFlow",
+        "Cash Flow From Continuing Operating Activities",
+        "CashFlowFromContinuingOperatingActivities"
+    ], cf_col_prev)
+
+    CapEx_prev = _safe_get_line(cf, ["Capital Expenditures", "CapitalExpenditures", "Capital Expenditure"], cf_col_prev)
+
+    if CFO_prev is None or CapEx_prev is None:
+        return {"error": "EBIT missing; CFO fallback needs prior-year CFO and CapEx to estimate growth."}
+
+    CFO_prev = float(CFO_prev)
+    CapEx_prev = float(CapEx_prev)
+    capex_outflow_prev = -CapEx_prev if CapEx_prev < 0 else CapEx_prev
+
+    # prior interest adjustment if present (optional)
+    interest_adj_prev = interest_adj
+
+    FCFF_prev = CFO_prev + interest_adj_prev - capex_outflow_prev
+
+    if FCFF_prev <= 0 or FCFF0 <= 0:
+        return {"error": "EBIT missing; CFO fallback FCFF is non-positive in current/prior year, growth estimation not stable."}
+
+    g = (FCFF0 / FCFF_prev) - 1.0
+
+    # keep a sanity range, but do NOT silently clip without telling you
+    if not np.isfinite(g) or g < -0.50 or g > 0.50:
+        return {"error": f"EBIT missing; computed fallback growth g out of bounds: {g}."}
         EBIT = float(EBIT)
 
         # D&A
