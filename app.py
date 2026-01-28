@@ -741,31 +741,19 @@ def analyze_stock(request: StockRequest):
         wD = D / total_cap
         WACC = wE * Re + wD * Rd * (1.0 - T)
 
-        # EBIT
-        # --- EBIT / Operating Income (robust) ---
-try:
-    pack = fetcher.fetch_statements_yahoo(ticker)
-    info = pack["info"]
-    fin = pack["financials"]
-    bs = pack["balance_sheet"]
-    cf = pack["cashflow"]
-except Exception as e:
-    return {"error": f"Statement data error: {str(e)}"}
-EBIT = _safe_get_line(fin, [
-    "Ebit", "EBIT",
-    "Operating Income", "OperatingIncome",
-    "Total Operating Income As Reported", "TotalOperatingIncomeAsReported",
-    "Operating Profit", "OperatingProfit"
-], fin_col)
+              # EBIT / Operating Income (robust)
+        EBIT = _safe_get_line(fin, [
+            "Ebit", "EBIT",
+            "Operating Income", "OperatingIncome",
+            "Total Operating Income As Reported", "TotalOperatingIncomeAsReported",
+            "Operating Profit", "OperatingProfit"
+        ], fin_col)
 
-# If direct label matching fails, try "contains" search
-if EBIT is None:
-    EBIT = _safe_get_line_contains(fin, ["operating", "income"], fin_col)
+        # If direct label matching fails, try fuzzy match
+        if EBIT is None:
+            EBIT = _safe_get_line_contains(fin, ["operating", "income"], fin_col)
 
-# --- If still missing, use CFO-based FCFF fallback instead of stopping ---
-fcff_method = "EBIT-based"
-if EBIT is None:
-    fcff_method = "CFO-based fallback"
+        fcff_method = "EBIT-based"
 
     CFO = _safe_get_line(cf, [
         "Total Cash From Operating Activities",
