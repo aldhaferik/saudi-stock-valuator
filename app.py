@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -26,9 +26,9 @@ app.add_middleware(
 )
 
 # =========================================================
-# 0) GLOBAL SETTINGS (no hard-coded finance assumptions)
+# 0) GLOBAL SETTINGS
 # =========================================================
-TASI_TICKER = "^TASI.SR"  # Tadawul All Shares Index on Yahoo Finance
+TASI_TICKER = "^TASI.SR"
 DEFAULT_HISTORY_PERIOD = "5y"
 BETA_LOOKBACK_DAYS = 252 * 2
 MARKET_RETURN_LOOKBACK_DAYS = 252 * 5
@@ -38,14 +38,6 @@ FORECAST_YEARS = 5
 # 1) DATA FETCHING
 # =========================================================
 class DataFetcher:
-    """
-    Fetches:
-    - price history (ticker)
-    - financial statements (income statement, balance sheet, cash flow)
-    - shares outstanding / market cap when available
-    - market index history (TASI) for beta and market return
-    - risk-free rate from local Excel (saudi_yields.xlsx)
-    """
     def __init__(self):
         self.user_agents = [
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/120.0.0.0 Safari/537.36",
@@ -64,10 +56,6 @@ class DataFetcher:
         return hist
 
     def fetch_statements_yahoo(self, ticker: str):
-        """
-        Uses yfinance's statement tables. Availability varies by ticker.
-        Returns dict of DataFrames (annual), plus info dict.
-        """
         import yfinance as yf
         stock = yf.Ticker(ticker)
 
@@ -98,19 +86,8 @@ class DataFetcher:
         excel_path: str = "saudi_yields.xlsx",
         maturity_col: str = "10-Year government bond yield",
     ) -> float:
-        """
-        Reads Saudi government bond yield from a local Excel file.
-        Expects columns:
-          - TIME
-          - maturity_col (default '10-Year government bond yield')
-        Missing values may appear as '..'
-        Returns decimal (e.g., 0.0564).
-        """
-        # Use path relative to this file (important on Render)
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        full_path = excel_path
-        if not os.path.isabs(excel_path):
-            full_path = os.path.join(base_dir, excel_path)
+        full_path = excel_path if os.path.isabs(excel_path) else os.path.join(base_dir, excel_path)
 
         try:
             df = pd.read_excel(full_path, engine="openpyxl")
@@ -132,12 +109,11 @@ class DataFetcher:
         tmp = tmp.sort_values("TIME")
         last_y_percent = float(tmp["Y"].iloc[-1])
 
-        rf = last_y_percent / 100.0  # percent -> decimal
+        rf = last_y_percent / 100.0
         if rf <= 0 or rf > 0.50:
             raise ValueError(f"Risk-free rate out of bounds after parsing: {rf}")
 
         return rf
-
 
 # =========================================================
 # 2) UI
@@ -502,25 +478,13 @@ async def read_root():
 class StockRequest(BaseModel):
     ticker: str
 
+
 def _clean_saudi_ticker(ticker: str) -> str:
     t = ticker.strip().upper()
     if t.replace(".", "").isdigit() and not t.endswith(".SR"):
         return f"{t}.SR"
     return t
 
-def _safe_get_line(df: pd.DataFrame, possible_names: list[str], col) -> float | None:
-    if df is None or df.empty:
-        return None
-    for name in possible_names:
-        if name in df.index:
-            val = df.loc[name, col]
-            if pd.isna(val):
-                continue
-            try:
-                return float(val)
-            except Exception:
-                continue
-    return None
 
 def _most_recent_col(df: pd.DataFrame):
     if df is None or df.empty:
@@ -532,6 +496,7 @@ def _most_recent_col(df: pd.DataFrame):
     except Exception:
         return cols[0]
 
+
 def _second_most_recent_col(df: pd.DataFrame):
     if df is None or df.empty:
         return None
@@ -541,6 +506,38 @@ def _second_most_recent_col(df: pd.DataFrame):
         return cols_sorted[1] if len(cols_sorted) > 1 else None
     except Exception:
         return cols[1] if len(cols) > 1 else None
+
+
+def _norm_key(s: str) -> str:
+    # normalize for fuzzy matching: remove non-alphanum and lowercase
+    return "".join(ch.lower() for ch in str(s) if ch.isalnum())
+
+
+def _safe_get_line_fuzzy(df: pd.DataFrame, possible_names: list[str], col) -> float | None:
+    """
+    Fuzzy match statement row labels by normalized key.
+    Works across 'Operating Income' vs 'OperatingIncome' etc.
+    """
+    if df is None or df.empty or col is None:
+        return None
+
+    idx_map = {}
+    for lab in df.index:
+        idx_map[_norm_key(lab)] = lab
+
+    for name in possible_names:
+        k = _norm_key(name)
+        if k in idx_map:
+            real_label = idx_map[k]
+            val = df.loc[real_label, col]
+            if pd.isna(val):
+                continue
+            try:
+                return float(val)
+            except Exception:
+                continue
+    return None
+
 
 def _annualized_geo_mean_return(prices: pd.Series, periods_per_year: int = 252) -> float:
     prices = prices.dropna()
@@ -553,6 +550,7 @@ def _annualized_geo_mean_return(prices: pd.Series, periods_per_year: int = 252) 
     if start <= 0 or end <= 0 or years <= 0:
         raise ValueError("Invalid market price series for return estimation.")
     return (end / start) ** (1.0 / years) - 1.0
+
 
 def _beta_regression(stock_prices: pd.Series, market_prices: pd.Series) -> float:
     df = pd.DataFrame({"s": stock_prices, "m": market_prices}).dropna()
@@ -569,322 +567,424 @@ def _beta_regression(stock_prices: pd.Series, market_prices: pd.Series) -> float
         raise ValueError("Market variance is zero; cannot compute beta.")
     return float(cov / var)
 
+
 @app.post("/analyze")
 def analyze_stock(request: StockRequest):
-    fetcher = DataFetcher()
-    ticker = _clean_saudi_ticker(request.ticker)
-
-    # 1) Prices
+    # IMPORTANT: prevent HTTP 500 by catching everything and returning JSON
     try:
+        fetcher = DataFetcher()
+        ticker = _clean_saudi_ticker(request.ticker)
+
+        # 1) Prices
         hist = fetcher.fetch_prices_yahoo(ticker, period=DEFAULT_HISTORY_PERIOD)
         mkt = fetcher.fetch_prices_yahoo(TASI_TICKER, period=DEFAULT_HISTORY_PERIOD)
-    except Exception as e:
-        return {"error": f"Price data error: {str(e)}"}
 
-    if "Close" not in hist.columns or hist["Close"].dropna().empty:
-        return {"error": "No valid Close prices for the stock."}
-    if "Close" not in mkt.columns or mkt["Close"].dropna().empty:
-        return {"error": "No valid Close prices for TASI market index (^TASI.SR)."}
+        if "Close" not in hist.columns or hist["Close"].dropna().empty:
+            return {"error": "No valid Close prices for the stock."}
+        if "Close" not in mkt.columns or mkt["Close"].dropna().empty:
+            return {"error": "No valid Close prices for TASI market index (^TASI.SR)."}
 
-    current_price = float(hist["Close"].iloc[-1])
-    dates_ms = (hist.index.astype(np.int64) // 10**6).tolist()
-    prices = hist["Close"].astype(float).tolist()
+        current_price = float(hist["Close"].iloc[-1])
+        dates_ms = (hist.index.astype(np.int64) // 10**6).tolist()
+        prices = hist["Close"].astype(float).tolist()
 
-    # 2) Statements + info
-    try:
+        # 2) Statements + info
         pack = fetcher.fetch_statements_yahoo(ticker)
         info = pack["info"] or {}
         fin = pack["financials"]
         bs = pack["balance_sheet"]
         cf = pack["cashflow"]
-    except Exception as e:
-        return {"error": f"Statement data error: {str(e)}"}
 
-    company_name = info.get("longName") or f"Saudi Stock {request.ticker}"
-    sector = (info.get("sector") or "Unknown").title()
+        company_name = info.get("longName") or f"Saudi Stock {request.ticker}"
+        sector = (info.get("sector") or "Unknown").title()
 
-    # Market cap / shares
-    shares = info.get("sharesOutstanding")
-    mcap = info.get("marketCap")
-    if mcap is None and shares is not None:
-        try:
-            mcap = float(shares) * current_price
-        except Exception:
-            mcap = None
-    if mcap is None:
-        return {"error": "Missing market cap (or shares outstanding) from data source. Cannot compute WACC without E."}
-    E = float(mcap)
+        shares = info.get("sharesOutstanding")
+        mcap = info.get("marketCap")
+        if mcap is None and shares is not None:
+            try:
+                mcap = float(shares) * current_price
+            except Exception:
+                mcap = None
+        if mcap is None:
+            return {"error": "Missing market cap (or shares outstanding) from data source. Cannot compute WACC without E."}
+        E = float(mcap)
 
-    # 3) Risk-free rate from Excel
-    try:
+        # 3) Risk-free from Excel
         rf = fetcher.fetch_saudi_risk_free_from_excel("saudi_yields.xlsx", "10-Year government bond yield")
-    except Exception as e:
-        return {"error": f"Could not fetch Saudi risk-free rate from Excel: {str(e)}"}
 
-    # 4) Expected market return and ERP from historical TASI
-    try:
+        # 4) Market expected return / ERP
         mkt_close = mkt["Close"].astype(float).dropna().tail(MARKET_RETURN_LOOKBACK_DAYS)
         rm_exp = _annualized_geo_mean_return(mkt_close)
         erp = rm_exp - rf
-    except Exception as e:
-        return {"error": f"Could not compute market expected return/ERP from TASI history: {str(e)}"}
 
-    # 5) Beta from regression (stock vs TASI)
-    try:
+        # 5) Beta
         s_close = hist["Close"].astype(float).dropna().tail(BETA_LOOKBACK_DAYS)
         m_close = mkt["Close"].astype(float).dropna().tail(BETA_LOOKBACK_DAYS)
         beta = _beta_regression(s_close, m_close)
-    except Exception as e:
-        return {"error": f"Could not compute regression beta vs TASI: {str(e)}"}
 
-    # 6) Cost of equity
-    Re = rf + beta * erp
+        # 6) Cost of equity
+        Re = rf + beta * erp
 
-    # 7) Extract statement line items
-    fin_col = _most_recent_col(fin)
-    bs_col = _most_recent_col(bs)
-    cf_col = _most_recent_col(cf)
+        # 7) Statement columns
+        fin_col = _most_recent_col(fin)
+        bs_col = _most_recent_col(bs)
+        cf_col = _most_recent_col(cf)
 
-    fin_col_prev = _second_most_recent_col(fin)
-    bs_col_prev = _second_most_recent_col(bs)
-    cf_col_prev = _second_most_recent_col(cf)
+        bs_col_prev = _second_most_recent_col(bs)
 
-    if fin_col is None or bs_col is None or cf_col is None:
-        return {"error": "Missing annual financial statements (income/balance/cashflow). Cannot compute FCFF/WACC."}
+        if fin_col is None or bs_col is None or cf_col is None:
+            return {"error": "Missing annual financial statements (income/balance/cashflow). Cannot compute FCFF/WACC."}
 
-    EBIT = _safe_get_line(fin, ["Ebit", "EBIT", "Operating Income"], fin_col)
-    if EBIT is None:
-        return {"error": "Missing EBIT / Operating Income in income statement. Cannot compute FCFF."}
+        # 8) Taxes
+        pretax = _safe_get_line_fuzzy(fin, ["Pretax Income", "Income Before Tax"], fin_col)
+        tax_exp = _safe_get_line_fuzzy(fin, ["Tax Provision", "Income Tax Expense"], fin_col)
 
-    pretax = _safe_get_line(fin, ["Pretax Income", "Income Before Tax"], fin_col)
-    tax_exp = _safe_get_line(fin, ["Tax Provision", "Income Tax Expense"], fin_col)
+        T = 0.0
+        if pretax is not None and tax_exp is not None and pretax > 0:
+            T = float(tax_exp) / float(pretax)
+            T = max(0.0, min(T, 0.35))
 
-    T = 0.0
-    if pretax is not None and tax_exp is not None and pretax > 0:
-        T = float(tax_exp) / float(pretax)
-        T = max(0.0, min(T, 0.35))
+        # 9) Debt / cash / Rd
+        interest_exp = _safe_get_line_fuzzy(
+            fin,
+            ["Interest Expense", "Interest Expense Non Operating", "InterestExpense"],
+            fin_col
+        )
 
-    interest_exp = _safe_get_line(fin, ["Interest Expense", "Interest Expense Non Operating"], fin_col)
+        st_debt = _safe_get_line_fuzzy(bs, ["Short Long Term Debt", "Short Term Debt", "Current Debt"], bs_col) or 0.0
+        lt_debt = _safe_get_line_fuzzy(bs, ["Long Term Debt", "Long Term Debt And Capital Lease Obligation"], bs_col) or 0.0
+        D = float(st_debt) + float(lt_debt)
 
-    st_debt = _safe_get_line(bs, ["Short Long Term Debt", "Short Term Debt", "Current Debt"], bs_col) or 0.0
-    lt_debt = _safe_get_line(bs, ["Long Term Debt", "Long Term Debt And Capital Lease Obligation"], bs_col) or 0.0
-    D = float(st_debt) + float(lt_debt)
+        cash = _safe_get_line_fuzzy(
+            bs,
+            ["Cash", "Cash And Cash Equivalents", "Cash And Cash Equivalents And Short Term Investments"],
+            bs_col
+        ) or 0.0
+        cash = float(cash)
 
-    cash = _safe_get_line(bs, ["Cash", "Cash And Cash Equivalents", "Cash And Cash Equivalents And Short Term Investments"], bs_col) or 0.0
-    cash = float(cash)
+        Rd = 0.0
+        if D > 0:
+            if interest_exp is None:
+                return {"error": "Company has debt but missing interest expense. Cannot compute cost of debt Rd."}
+            if bs_col_prev is None:
+                return {"error": "Need at least 2 years of balance sheet to compute average debt for Rd."}
+            st_debt_prev = _safe_get_line_fuzzy(bs, ["Short Long Term Debt", "Short Term Debt", "Current Debt"], bs_col_prev) or 0.0
+            lt_debt_prev = _safe_get_line_fuzzy(bs, ["Long Term Debt", "Long Term Debt And Capital Lease Obligation"], bs_col_prev) or 0.0
+            D_prev = float(st_debt_prev) + float(lt_debt_prev)
+            avg_D = (D + D_prev) / 2.0
+            if avg_D <= 0:
+                return {"error": "Average debt computed as zero/non-positive; cannot compute Rd."}
+            Rd = float(interest_exp) / avg_D
+            if Rd <= 0 or Rd > 0.50:
+                return {"error": f"Computed Rd out of sanity bounds: {Rd}. Check interest expense / debt inputs."}
 
-    # Cost of debt
-    Rd = 0.0
-    if D > 0:
-        if interest_exp is None:
-            return {"error": "Company has debt but missing interest expense. Cannot compute cost of debt Rd."}
-        if bs_col_prev is None:
-            return {"error": "Need at least 2 years of balance sheet to compute average debt for Rd."}
-        st_debt_prev = _safe_get_line(bs, ["Short Long Term Debt", "Short Term Debt", "Current Debt"], bs_col_prev) or 0.0
-        lt_debt_prev = _safe_get_line(bs, ["Long Term Debt", "Long Term Debt And Capital Lease Obligation"], bs_col_prev) or 0.0
-        D_prev = float(st_debt_prev) + float(lt_debt_prev)
-        avg_D = (D + D_prev) / 2.0
-        if avg_D <= 0:
-            return {"error": "Average debt computed as zero/non-positive; cannot compute Rd."}
-        Rd = float(interest_exp) / avg_D
-        if Rd <= 0 or Rd > 0.50:
-            return {"error": f"Computed Rd out of sanity bounds: {Rd}. Check interest expense / debt inputs."}
+        # 10) WACC
+        total_cap = D + E
+        if total_cap <= 0:
+            return {"error": "Invalid capital structure: D+E <= 0."}
+        wE = E / total_cap
+        wD = D / total_cap
+        WACC = wE * Re + wD * Rd * (1.0 - T)
 
-    # 8) WACC
-    total_cap = D + E
-    if total_cap <= 0:
-        return {"error": "Invalid capital structure: D+E <= 0."}
-    wE = E / total_cap
-    wD = D / total_cap
-    WACC = wE * Re + wD * Rd * (1.0 - T)
+        # 11) CapEx and D&A (still needed in both methods)
+        DA = _safe_get_line_fuzzy(
+            cf,
+            ["Depreciation", "Depreciation And Amortization", "Depreciation & Amortization", "DepreciationAndAmortization"],
+            cf_col
+        )
+        if DA is None:
+            DA = _safe_get_line_fuzzy(fin, ["Reconciled Depreciation", "Depreciation And Amortization"], fin_col)
+        if DA is None:
+            return {"error": "Missing depreciation & amortization (D&A). Cannot compute FCFF."}
+        DA = float(DA)
 
-    # 9) FCFF
-    DA = _safe_get_line(cf, ["Depreciation", "Depreciation And Amortization", "Depreciation & Amortization"], cf_col)
-    if DA is None:
-        DA = _safe_get_line(fin, ["Reconciled Depreciation", "Depreciation And Amortization"], fin_col)
-    if DA is None:
-        return {"error": "Missing depreciation & amortization (D&A). Cannot compute FCFF."}
-    DA = float(DA)
+        CapEx = _safe_get_line_fuzzy(cf, ["Capital Expenditures", "Capital Expenditure", "CapitalExpenditures"], cf_col)
+        if CapEx is None:
+            return {"error": "Missing CapEx in cash flow. Cannot compute FCFF."}
+        CapEx = float(CapEx)
+        capex_outflow = -CapEx if CapEx < 0 else CapEx
 
-    CapEx = _safe_get_line(cf, ["Capital Expenditures", "Capital Expenditure"], cf_col)
-    if CapEx is None:
-        return {"error": "Missing CapEx in cash flow. Cannot compute FCFF."}
-    CapEx = float(CapEx)
-    capex_outflow = -CapEx if CapEx < 0 else CapEx
+        # =========================================================
+        # FCFF METHOD A (preferred): EBIT-based
+        # If EBIT missing, fallback to METHOD B (CFO-based)
+        # =========================================================
+        EBIT = _safe_get_line_fuzzy(
+            fin,
+            [
+                "Ebit", "EBIT", "Operating Income", "OperatingIncome",
+                "Total Operating Income As Reported", "TotalOperatingIncomeAsReported"
+            ],
+            fin_col
+        )
 
-    # ΔWC fallback:
-    # A) Balance Sheet method (preferred)
-    def net_working_capital(bs_df: pd.DataFrame, col):
-        tca = _safe_get_line(bs_df, ["Total Current Assets"], col)
-        tcl = _safe_get_line(bs_df, ["Total Current Liabilities"], col)
-        if tca is None or tcl is None:
-            return None
-        cash_local = _safe_get_line(bs_df, ["Cash", "Cash And Cash Equivalents", "Cash And Cash Equivalents And Short Term Investments"], col) or 0.0
-        st_debt_local = _safe_get_line(bs_df, ["Short Long Term Debt", "Short Term Debt", "Current Debt"], col) or 0.0
-        return (float(tca) - float(cash_local)) - (float(tcl) - float(st_debt_local))
+        fcff_method = "EBIT-based"
+        FCFF0 = None
+        g = None
+        ROIC = None
+        reinvestment = None
+        dWC = None
 
-    dWC = None
-    if bs_col_prev is not None:
-        NWC_now = net_working_capital(bs, bs_col)
-        NWC_prev = net_working_capital(bs, bs_col_prev)
-        if NWC_now is not None and NWC_prev is not None:
-            dWC = float(NWC_now - NWC_prev)
+        if EBIT is not None:
+            EBIT = float(EBIT)
+            NOPAT = EBIT * (1.0 - T)
+            if NOPAT <= 0:
+                return {"error": "NOPAT is non-positive (from EBIT). This strict model won’t project FCFF from negative NOPAT."}
 
-    # B) Cash Flow fallback: "Change in Working Capital" is typically -ΔWC in CFO reconciliation
-    if dWC is None:
-        cwc = _safe_get_line(cf, ["Change In Working Capital", "Change in Working Capital"], cf_col)
-        if cwc is not None:
-            dWC = float(-cwc)
+            # ΔWC attempt: balance sheet first, else cashflow line
+            def net_working_capital(bs_df: pd.DataFrame, col):
+                tca = _safe_get_line_fuzzy(bs_df, ["Total Current Assets", "TotalCurrentAssets"], col)
+                tcl = _safe_get_line_fuzzy(bs_df, ["Total Current Liabilities", "TotalCurrentLiabilities"], col)
+                if tca is None or tcl is None:
+                    return None
+                cash_local = _safe_get_line_fuzzy(bs_df, ["Cash", "Cash And Cash Equivalents", "Cash And Cash Equivalents And Short Term Investments"], col) or 0.0
+                st_debt_local = _safe_get_line_fuzzy(bs_df, ["Short Long Term Debt", "Short Term Debt", "Current Debt"], col) or 0.0
+                return (float(tca) - float(cash_local)) - (float(tcl) - float(st_debt_local))
 
-    if dWC is None:
-        return {
-            "error": (
-                "Missing current assets/liabilities needed for ΔWC AND no 'Change in Working Capital' line in cash flow. "
-                "Cannot compute FCFF. Needed either (Total Current Assets & Total Current Liabilities in balance sheet) "
-                "or (Change in Working Capital in cash flow)."
+            if bs_col_prev is not None:
+                NWC_now = net_working_capital(bs, bs_col)
+                NWC_prev = net_working_capital(bs, bs_col_prev)
+                if NWC_now is not None and NWC_prev is not None:
+                    dWC = float(NWC_now - NWC_prev)
+
+            if dWC is None:
+                cwc = _safe_get_line_fuzzy(cf, ["Change In Working Capital", "Change in Working Capital", "ChangeInWorkingCapital"], cf_col)
+                if cwc is not None:
+                    dWC = float(-cwc)
+
+            if dWC is None:
+                return {
+                    "error": (
+                        "Missing ΔWC inputs. Needed either (Total Current Assets & Total Current Liabilities in balance sheet) "
+                        "or (Change in Working Capital in cash flow). Cannot compute FCFF."
+                    )
+                }
+
+            FCFF0 = NOPAT + DA - capex_outflow - dWC
+
+            invested_capital = (E + D - cash)
+            if invested_capital <= 0:
+                return {"error": "Invested capital computed as non-positive. Cannot compute ROIC/growth."}
+
+            ROIC = NOPAT / invested_capital
+            reinvestment = (capex_outflow - DA + dWC) / NOPAT
+            g = ROIC * reinvestment
+
+            if not np.isfinite(g) or g < -0.50 or g > 0.50:
+                return {"error": f"Computed growth g out of sanity bounds: {g}. Check ROIC/reinvestment inputs."}
+
+        else:
+            # ---------------------------------------------------------
+            # FCFF METHOD B (fallback): CFO-based
+            # FCFF ≈ CFO + Interest*(1-T) - CapEx
+            # Growth: use historical FCFF trend if possible; else stop with explicit message.
+            # ---------------------------------------------------------
+            fcff_method = "CFO-based fallback"
+
+            CFO = _safe_get_line_fuzzy(
+                cf,
+                [
+                    "Total Cash From Operating Activities",
+                    "TotalCashFromOperatingActivities",
+                    "Operating Cash Flow",
+                    "OperatingCashFlow",
+                    "Cash Flow From Continuing Operating Activities",
+                    "CashFlowFromContinuingOperatingActivities",
+                ],
+                cf_col
             )
-        }
 
-    NOPAT = float(EBIT) * (1.0 - T)
-    if NOPAT <= 0:
-        return {"error": "NOPAT is non-positive. This strict model won’t project FCFF from negative NOPAT."}
+            if CFO is None:
+                return {
+                    "error": (
+                        "Missing EBIT/Operating Income AND missing Operating Cash Flow (CFO). "
+                        "Cannot compute FCFF from available Yahoo statements for this ticker."
+                    )
+                }
 
-    FCFF0 = NOPAT + DA - capex_outflow - dWC
+            CFO = float(CFO)
+            interest_adj = 0.0
+            if interest_exp is not None:
+                interest_adj = float(interest_exp) * (1.0 - T)
 
-    # 10) Fundamental growth: g = ROIC * reinvestment rate
-    invested_capital = (E + D - cash)
-    if invested_capital <= 0:
-        return {"error": "Invested capital computed as non-positive. Cannot compute ROIC/growth."}
-    ROIC = NOPAT / invested_capital
+            FCFF0 = CFO + interest_adj - capex_outflow
 
-    reinvestment = (capex_outflow - DA + dWC) / NOPAT
-    g = ROIC * reinvestment
-    if not np.isfinite(g) or g < -0.50 or g > 0.50:
-        return {"error": f"Computed growth g out of sanity bounds: {g}. Check ROIC/reinvestment inputs."}
+            # Growth for fallback: use 2-year FCFF growth if we can get prior CFO/CapEx
+            if cf_col_prev is None:
+                return {
+                    "error": (
+                        "EBIT missing so fallback FCFF uses CFO. But only 1 year of cashflow is available, "
+                        "so I can’t estimate a data-driven growth rate. Need at least 2 years of cashflow."
+                    )
+                }
 
-    # 11) Terminal growth cap = long-run market CAGR (TASI)
-    try:
-        g_mkt = _annualized_geo_mean_return(mkt_close)
-    except Exception:
-        g_mkt = rm_exp
-    g_term = min(g, g_mkt)
+            CFO_prev = _safe_get_line_fuzzy(
+                cf,
+                [
+                    "Total Cash From Operating Activities",
+                    "TotalCashFromOperatingActivities",
+                    "Operating Cash Flow",
+                    "OperatingCashFlow",
+                    "Cash Flow From Continuing Operating Activities",
+                    "CashFlowFromContinuingOperatingActivities",
+                ],
+                cf_col_prev
+            )
+            CapEx_prev = _safe_get_line_fuzzy(cf, ["Capital Expenditures", "Capital Expenditure", "CapitalExpenditures"], cf_col_prev)
 
-    if WACC <= g_term:
-        return {"error": f"WACC ({WACC:.4f}) <= terminal growth ({g_term:.4f}). DCF undefined. Check inputs."}
+            if CFO_prev is None or CapEx_prev is None:
+                return {
+                    "error": (
+                        "EBIT missing so fallback FCFF uses CFO. But prior-year CFO/CapEx are missing, "
+                        "so I can’t estimate a data-driven growth rate. Cannot proceed."
+                    )
+                }
 
-    # 12) DCF valuation
-    fcff_forecast = []
-    pv_sum = 0.0
-    for i in range(1, FORECAST_YEARS + 1):
-        fcff_i = FCFF0 * ((1.0 + g) ** i)
-        fcff_forecast.append(float(fcff_i))
-        pv_sum += fcff_i / ((1.0 + WACC) ** i)
+            CFO_prev = float(CFO_prev)
+            CapEx_prev = float(CapEx_prev)
+            capex_outflow_prev = -CapEx_prev if CapEx_prev < 0 else CapEx_prev
 
-    TV = (fcff_forecast[-1] * (1.0 + g_term)) / (WACC - g_term)
-    PV_TV = TV / ((1.0 + WACC) ** FORECAST_YEARS)
-    EV = pv_sum + PV_TV
+            interest_adj_prev = 0.0
+            if interest_exp is not None:
+                interest_adj_prev = float(interest_exp) * (1.0 - T)
 
-    equity_value = EV - (D - cash)
+            FCFF_prev = CFO_prev + interest_adj_prev - capex_outflow_prev
 
-    if shares is None:
-        return {"error": "Missing sharesOutstanding. Cannot convert equity value to per-share fair value."}
-    try:
+            if FCFF_prev <= 0 or FCFF0 <= 0:
+                return {
+                    "error": (
+                        "EBIT missing so fallback FCFF uses CFO. Computed FCFF is non-positive in current or prior year, "
+                        "so growth estimation is not stable. Cannot proceed."
+                    )
+                }
+
+            g = (FCFF0 / FCFF_prev) - 1.0
+            if not np.isfinite(g) or g < -0.50 or g > 0.50:
+                return {"error": f"Computed growth g (CFO-based) out of sanity bounds: {g}."}
+
+            ROIC = None
+            reinvestment = None
+            dWC = None
+
+        # Terminal growth cap = long-run market CAGR
+        try:
+            g_mkt = _annualized_geo_mean_return(mkt_close)
+        except Exception:
+            g_mkt = rm_exp
+
+        g_term = min(g, g_mkt)
+        if WACC <= g_term:
+            return {"error": f"WACC ({WACC:.4f}) <= terminal growth ({g_term:.4f}). DCF undefined. Check inputs."}
+
+        # DCF valuation
+        fcff_forecast = []
+        pv_sum = 0.0
+        for i in range(1, FORECAST_YEARS + 1):
+            fcff_i = FCFF0 * ((1.0 + g) ** i)
+            fcff_forecast.append(float(fcff_i))
+            pv_sum += fcff_i / ((1.0 + WACC) ** i)
+
+        TV = (fcff_forecast[-1] * (1.0 + g_term)) / (WACC - g_term)
+        PV_TV = TV / ((1.0 + WACC) ** FORECAST_YEARS)
+        EV = pv_sum + PV_TV
+
+        equity_value = EV - (D - cash)
+
+        if shares is None:
+            return {"error": "Missing sharesOutstanding. Cannot convert equity value to per-share fair value."}
         shares = float(shares)
         if shares <= 0:
-            raise ValueError("sharesOutstanding <= 0")
-    except Exception:
-        return {"error": "Invalid sharesOutstanding. Cannot compute per-share fair value."}
+            return {"error": "Invalid sharesOutstanding. Cannot compute per-share fair value."}
 
-    fair_value = equity_value / shares
-    upside = ((fair_value - current_price) / current_price) * 100.0
+        fair_value = equity_value / shares
+        upside = ((fair_value - current_price) / current_price) * 100.0
 
-    verdict = "Fairly Valued"
-    if upside > 10:
-        verdict = "Undervalued"
-    elif upside < -10:
-        verdict = "Overvalued"
+        verdict = "Fairly Valued"
+        if upside > 10:
+            verdict = "Undervalued"
+        elif upside < -10:
+            verdict = "Overvalued"
 
-    eps_curr = info.get("trailingEps")
-    book_curr = info.get("bookValue")
-    pe_rat = info.get("trailingPE")
-    if eps_curr is None and pe_rat is not None and pe_rat != 0:
-        eps_curr = current_price / pe_rat
-    if eps_curr is None:
-        eps_curr = np.nan
-    if book_curr is None:
-        book_curr = np.nan
+        pe_rat = info.get("trailingPE")
+        eps_curr = info.get("trailingEps")
+        book_curr = info.get("bookValue")
 
-    fair_values = [float(fair_value)] * len(prices)
+        fair_values = [float(fair_value)] * len(prices)
 
-    backtest_data = []
-    points = [("1 Year Ago", 252), ("2 Years Ago", 504), ("3 Years Ago", 756), ("4 Years Ago", 1008), ("5 Years Ago", 1250)]
-    for label, days in points:
-        if len(prices) > days:
-            idx = -days
-            backtest_data.append({"period": label, "actual": float(prices[idx]), "model": float(fair_value)})
+        backtest_data = []
+        points = [("1 Year Ago", 252), ("2 Years Ago", 504), ("3 Years Ago", 756), ("4 Years Ago", 1008), ("5 Years Ago", 1250)]
+        for label, days in points:
+            if len(prices) > days:
+                idx = -days
+                backtest_data.append({"period": label, "actual": float(prices[idx]), "model": float(fair_value)})
 
-    def get_price_ago(days):
-        if len(prices) < days:
-            return current_price
-        return float(prices[-days])
+        def get_price_ago(days):
+            if len(prices) < days:
+                return current_price
+            return float(prices[-days])
 
-    returns = {
-        "1m": ((current_price - get_price_ago(21)) / get_price_ago(21)) * 100.0,
-        "3m": ((current_price - get_price_ago(63)) / get_price_ago(63)) * 100.0,
-        "6m": ((current_price - get_price_ago(126)) / get_price_ago(126)) * 100.0,
-        "1y": ((current_price - get_price_ago(252)) / get_price_ago(252)) * 100.0,
-        "2y": ((current_price - get_price_ago(504)) / get_price_ago(504)) * 100.0,
-    }
+        returns = {
+            "1m": ((current_price - get_price_ago(21)) / get_price_ago(21)) * 100.0,
+            "3m": ((current_price - get_price_ago(63)) / get_price_ago(63)) * 100.0,
+            "6m": ((current_price - get_price_ago(126)) / get_price_ago(126)) * 100.0,
+            "1y": ((current_price - get_price_ago(252)) / get_price_ago(252)) * 100.0,
+            "2y": ((current_price - get_price_ago(504)) / get_price_ago(504)) * 100.0,
+        }
 
-    return {
-        "valuation_summary": {
-            "company_name": company_name,
-            "fair_value": float(fair_value),
-            "current_price": float(current_price),
-            "verdict": verdict,
-            "upside_percent": float(upside),
-            "dcf_projections": [float(x) for x in fcff_forecast],
-            "sector": sector,
-            "model_breakdown": {
-                "dcf": float(fair_value),
-                "pe_model": float("nan"),
-                "pb_model": float("nan"),
+        return {
+            "valuation_summary": {
+                "company_name": company_name,
+                "fair_value": float(fair_value),
+                "current_price": float(current_price),
+                "verdict": verdict,
+                "upside_percent": float(upside),
+                "dcf_projections": [float(x) for x in fcff_forecast],
+                "sector": sector,
+                "model_breakdown": {
+                    "dcf": float(fair_value),
+                    "pe_model": float("nan"),
+                    "pb_model": float("nan"),
+                },
             },
-        },
-        "optimized_weights": {"dcf": 1.0, "pe": 0.0, "pb": 0.0},
-        "metrics": {
-            "market_cap": float(E),
-            "pe_ratio": None if pe_rat is None else float(pe_rat),
-            "eps": None if (eps_curr is None or (isinstance(eps_curr, float) and np.isnan(eps_curr))) else float(eps_curr),
-            "book_value": None if (book_curr is None or (isinstance(book_curr, float) and np.isnan(book_curr))) else float(book_curr),
-            "growth_rate": float(g),
-            "wacc": float(WACC),
-            "beta": float(beta),
-            "high52": float(max(prices[-252:])) if len(prices) >= 252 else float(max(prices)),
-            "low52": float(min(prices[-252:])) if len(prices) >= 252 else float(min(prices)),
-            "rf": float(rf),
-            "market_return": float(rm_exp),
-            "erp": float(erp),
-            "cost_of_equity": float(Re),
-            "cost_of_debt": float(Rd),
-            "tax_rate": float(T),
-            "debt": float(D),
-            "cash": float(cash),
-            "fcff0": float(FCFF0),
-            "roic": float(ROIC),
-            "reinvestment_rate": float(reinvestment),
-            "terminal_growth": float(g_term),
-            "d_wc": float(dWC),
-        },
-        "returns": returns,
-        "backtest": backtest_data,
-        "historical_data": {"dates": dates_ms, "prices": prices, "fair_values": fair_values},
-        "source_used": "Yahoo Finance (prices + statements) + Local Excel (risk-free)",
-        "is_dynamic_beta": True,
-        "is_synthetic_beta": False,
-        "is_dynamic_growth": True,
-        "is_synthetic_growth": False,
-    }
+            "optimized_weights": {"dcf": 1.0, "pe": 0.0, "pb": 0.0},
+            "metrics": {
+                "market_cap": float(E),
+                "pe_ratio": None if pe_rat is None else float(pe_rat),
+                "eps": None if eps_curr is None else float(eps_curr),
+                "book_value": None if book_curr is None else float(book_curr),
+                "growth_rate": float(g),
+                "wacc": float(WACC),
+                "beta": float(beta),
+                "high52": float(max(prices[-252:])) if len(prices) >= 252 else float(max(prices)),
+                "low52": float(min(prices[-252:])) if len(prices) >= 252 else float(min(prices)),
+                "rf": float(rf),
+                "market_return": float(rm_exp),
+                "erp": float(erp),
+                "cost_of_equity": float(Re),
+                "cost_of_debt": float(Rd),
+                "tax_rate": float(T),
+                "debt": float(D),
+                "cash": float(cash),
+                "fcff0": float(FCFF0),
+                "terminal_growth": float(g_term),
+                "fcff_method": fcff_method,
+                "roic": None if ROIC is None else float(ROIC),
+                "reinvestment_rate": None if reinvestment is None else float(reinvestment),
+                "d_wc": None if dWC is None else float(dWC),
+            },
+            "returns": returns,
+            "backtest": backtest_data,
+            "historical_data": {"dates": dates_ms, "prices": prices, "fair_values": fair_values},
+            "source_used": "Yahoo Finance (prices + statements) + Local Excel (risk-free)",
+            "is_dynamic_beta": True,
+            "is_synthetic_beta": False,
+            "is_dynamic_growth": True,
+            "is_synthetic_growth": False,
+        }
+
+    except Exception as e:
+        # This prevents HTTP 500 + HTML responses.
+        return JSONResponse(status_code=200, content={"error": f"Unhandled server exception: {str(e)}"})
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
