@@ -149,6 +149,19 @@ async def read_root():
         <h3>Calculating Intrinsic Value...</h3>
         <p style="color:#666; font-size:14px;">Deriving WACC, FCFF, Beta and Growth from Real Data</p>
     </div>
+</div>
+
+<script>
+async function analyze() {
+    // Placeholder: your JS can call your API endpoints here.
+    // Keeping minimal so the Python file remains valid.
+    return;
+}
+</script>
+
+</body>
+</html>
+"""
 
 # =========================================================
 # 4) DATA FETCHER (Yahoo primary, Twelve Data / Alpha Vantage price backups)
