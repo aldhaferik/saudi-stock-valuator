@@ -978,6 +978,7 @@ if EBIT is None:
                 "cost_of_equity": float(Re),
                 "cost_of_debt": float(Rd),
                 "tax_rate": float(T),
+                "fcff_method": fcff_method,
                 "debt": float(D),
                 "cash": float(cash),
                 "fcff0": float(FCFF0),
