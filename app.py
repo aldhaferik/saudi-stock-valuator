@@ -1292,61 +1292,63 @@ def analyze_stock(request: StockRequest):
 
         source_used = f"Prices: {src_stock} (stock), {src_mkt} (market); Statements: Yahoo Finance; RF: local Excel ({SAUDI_YIELDS_XLSX})"
 
-        return JSONResponse({
-            "valuation_summary": {
-                "company_name": company_name,
-                "fair_value": float(fair_value),
-                "current_price": float(current_price),
-                "verdict": verdict,
-                "upside_percent": float(upside),
-                "dcf_projections": dcf_projections,
-                "sector": sector,
-                "model_breakdown": {
-                    "dcf": None if current_models["dcf"] is None else float(current_models["dcf"]),
-                    "pe_model": None if current_models["pe"] is None else float(current_models["pe"]),
-                    "pb_model": None if current_models["pb"] is None else float(current_models["pb"]),
-                    "ev_ebitda_model": None if current_models["ev_ebitda"] is None else float(current_models["ev_ebitda"]),
-                    "calibration_k": float(k),
-                    "backtest_mape_percent": float(opt["mape"]),
-                }
-            },
-            "optimized_weights": {
-                "dcf": float(weights_full[0]),
-                "pe": float(weights_full[1]),
-                "pb": float(weights_full[2]),
-                "ev_ebitda": float(weights_full[3]),
-            },
-            "metrics": {
-                "market_cap": float(mcap),
-                "pe_ratio": pe_ratio_now,
-                "eps": eps_now,
-                "book_value": book_now,
-                "growth_rate": None if current_models["growth"] is None else float(current_models["growth"]),
-                "wacc": None if current_models["wacc"] is None else float(current_models["wacc"]),
-                "beta": None if current_models["beta"] is None else float(current_models["beta"]),
-                "high52": float(max(prices_list[-252:])) if len(prices_list) >= 252 else float(max(prices_list)),
-                "low52": float(min(prices_list[-252:])) if len(prices_list) >= 252 else float(min(prices_list)),
-                "rf": None if current_models["rf"] is None else float(current_models["rf"]),
-                "market_return": None if current_models["market_return"] is None else float(current_models["market_return"]),
-                "erp": None if current_models["erp"] is None else float(current_models["erp"]),
-                "cost_of_equity": None if current_models["cost_of_equity"] is None else float(current_models["cost_of_equity"]),
-                "cost_of_debt": None if current_models["cost_of_debt"] is None else float(current_models["cost_of_debt"]),
-                "tax_rate": None if current_models["tax_rate"] is None else float(current_models["tax_rate"]),
-                "method_flags": current_models["method_flags"],
-            },
-            "returns": returns,
-            "backtest": backtest_points,
-            "historical_data": {
-                "dates": dates_ms,
-                "prices": prices_list,
-                "fair_values": fair_values_full
-            },
-            "source_used": source_used,
-            "is_dynamic_beta": True,
-            "is_synthetic_beta": False,
-            "is_dynamic_growth": True,
-            "is_synthetic_growth": False
-        }, status_code=200)
+    result = {
+        "valuation_summary": {
+            "company_name": company_name,
+            "fair_value": fair_value,
+            "current_price": current_price,
+            "verdict": verdict,
+            "upside_percent": upside,
+            "dcf_projections": dcf_projections,
+            "sector": sector,
+            "model_breakdown": {
+                "dcf": current_models["dcf"],
+                "pe_model": current_models["pe"],
+                "pb_model": current_models["pb"],
+                "ev_ebitda_model": current_models["ev_ebitda"],
+                "calibration_k": k,
+                "backtest_mape_percent": opt["mape"],
+            }
+        },
+        "optimized_weights": {
+            "dcf": weights_full[0],
+            "pe": weights_full[1],
+            "pb": weights_full[2],
+            "ev_ebitda": weights_full[3],
+        },
+        "metrics": {
+            "market_cap": mcap,
+            "pe_ratio": pe_ratio_now,
+            "eps": eps_now,
+            "book_value": book_now,
+            "growth_rate": current_models["growth"],
+            "wacc": current_models["wacc"],
+            "beta": current_models["beta"],
+            "high52": max(prices_list[-252:]) if len(prices_list) >= 252 else max(prices_list),
+            "low52": min(prices_list[-252:]) if len(prices_list) >= 252 else min(prices_list),
+            "rf": current_models["rf"],
+            "market_return": current_models["market_return"],
+            "erp": current_models["erp"],
+            "cost_of_equity": current_models["cost_of_equity"],
+            "cost_of_debt": current_models["cost_of_debt"],
+            "tax_rate": current_models["tax_rate"],
+            "method_flags": current_models["method_flags"],
+        },
+        "returns": returns,
+        "backtest": backtest_points,
+        "historical_data": {
+            "dates": dates_ms,
+            "prices": prices_list,
+            "fair_values": fair_values_full
+        },
+        "source_used": source_used,
+        "is_dynamic_beta": True,
+        "is_synthetic_beta": False,
+        "is_dynamic_growth": True,
+        "is_synthetic_growth": False
+    }
+
+    return JSONResponse(content=json_safe(result), status_code=200)
 
     except Exception as e:
         # Never crash with HTTP 500; always return JSON so frontend doesn’t fail JSON.parse
