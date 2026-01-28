@@ -743,6 +743,14 @@ def analyze_stock(request: StockRequest):
 
         # EBIT
         # --- EBIT / Operating Income (robust) ---
+try:
+    pack = fetcher.fetch_statements_yahoo(ticker)
+    info = pack["info"]
+    fin = pack["financials"]
+    bs = pack["balance_sheet"]
+    cf = pack["cashflow"]
+except Exception as e:
+    return {"error": f"Statement data error: {str(e)}"}
 EBIT = _safe_get_line(fin, [
     "Ebit", "EBIT",
     "Operating Income", "OperatingIncome",
