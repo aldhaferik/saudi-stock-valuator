@@ -514,13 +514,11 @@ class DataFetcher:
         return hist
 
     def fetch_prices_twelve(self, ticker: str) -> pd.DataFrame:
-        # Twelve Data expects symbols; Tadawul sometimes works as "1120.SR" or "1120.SR"
-        # We'll try the ticker as-is.
         url = "https://api.twelvedata.com/time_series"
         params = {
             "symbol": ticker,
             "interval": "1day",
-            "outputsize": 1250,  # ~5 years trading days
+            "outputsize": 1250,
             "apikey": TWELVE_DATA_KEY,
             "format": "JSON",
         }
@@ -531,7 +529,6 @@ class DataFetcher:
         if "values" not in data or not isinstance(data["values"], list) or len(data["values"]) == 0:
             msg = data.get("message") or "No Twelve Data values."
             raise ValueError(f"Twelve Data: {msg}")
-        # values: list of dicts with "datetime","close"
         rows = []
         for v in data["values"]:
             try:
@@ -544,7 +541,6 @@ class DataFetcher:
         return df
 
     def fetch_prices_alpha_vantage(self, ticker: str) -> pd.DataFrame:
-        # Alpha Vantage symbol format for Saudi often uses .SA; you used that earlier.
         av_symbol = ticker.replace(".SR", ".SA")
         url = "https://www.alphavantage.co/query"
         params = {
@@ -573,7 +569,6 @@ class DataFetcher:
         return df[["Close"]]
 
     def fetch_prices(self, ticker: str, period: str = DEFAULT_HISTORY_PERIOD) -> tuple[pd.DataFrame, str]:
-        # Try Yahoo, then Twelve, then Alpha Vantage
         try:
             return self.fetch_prices_yahoo(ticker, period=period), "Yahoo Finance"
         except Exception:
@@ -587,7 +582,7 @@ class DataFetcher:
         except Exception as e:
             raise ValueError(f"All price sources failed: {str(e)}")
 
-    # ---------- Statements (Yahoo only: backups rarely provide full statements) ----------
+    # ---------- Statements ----------
     def fetch_statements_yahoo(self, ticker: str) -> dict:
         import yfinance as yf
         stock = yf.Ticker(ticker)
@@ -616,7 +611,6 @@ class DataFetcher:
 
     # ---------- Risk-free (Excel) ----------
     def fetch_saudi_risk_free_from_excel(self, path: str, column_name: str) -> float:
-        # Requires openpyxl installed for .xlsx in most environments.
         try:
             df = pd.read_excel(path, engine="openpyxl")
         except Exception as e:
@@ -625,7 +619,6 @@ class DataFetcher:
         if df is None or df.empty:
             raise ValueError("Excel file is empty.")
 
-        # Find column by case-insensitive match
         col = None
         for c in df.columns:
             if str(c).strip().lower() == str(column_name).strip().lower():
@@ -699,6 +692,153 @@ def safe_get_line_contains(df: pd.DataFrame, must_contain: list[str], col) -> fl
                 continue
     return None
 
+def to_float_or_none(x):
+    try:
+        if x is None:
+            return None
+        v = float(x)
+        if not np.isfinite(v):
+            return None
+        return v
+    except Exception:
+        return None
+
+# --- NEW: robust multiples inputs derived from statements when Yahoo "info" is missing ---
+def derive_eps_book_ebitda(
+    info: dict,
+    fin: pd.DataFrame,
+    bs: pd.DataFrame,
+    cf: pd.DataFrame,
+    fin_col,
+    bs_col,
+    cf_col,
+    shares_f: float,
+) -> dict:
+    """
+    Returns:
+      eps_now, book_now, ebitda_now, sources dict.
+    Priority:
+      1) Yahoo info fields if present and finite
+      2) Derive from statements (annual column):
+           EPS = Net Income / shares
+           Book value per share = Total Equity / shares
+           EBITDA = EBITDA line OR (EBIT + D&A) OR (Operating Income + D&A)
+    Notes:
+      - If Net Income or Total Equity are missing, those fallbacks remain None.
+      - EBITDA needs currency amount (not per-share).
+    """
+    sources = {
+        "eps": None,
+        "book_value_per_share": None,
+        "ebitda": None,
+    }
+
+    # 1) Yahoo info
+    eps_info = to_float_or_none(info.get("trailingEps"))
+    book_info = to_float_or_none(info.get("bookValue"))
+
+    # EBITDA usually not reliable in info for many tickers; still check.
+    ebitda_info = to_float_or_none(info.get("ebitda"))
+
+    eps_now = eps_info
+    if eps_now is not None:
+        sources["eps"] = "yahoo_info.trailingEps"
+
+    book_now = book_info
+    if book_now is not None:
+        sources["book_value_per_share"] = "yahoo_info.bookValue"
+
+    ebitda_now = ebitda_info
+    if ebitda_now is not None:
+        sources["ebitda"] = "yahoo_info.ebitda"
+
+    # 2) Derive EPS if needed
+    if eps_now is None and shares_f > 0:
+        net_income = safe_get_line(fin, [
+            "Net Income",
+            "Net Income Common Stockholders",
+            "Net Income Applicable To Common Shares",
+            "Net Income From Continuing Operations",
+            "NetIncome",
+            "NetIncomeCommonStockholders",
+        ], fin_col)
+        if net_income is None:
+            net_income = safe_get_line_contains(fin, ["net", "income"], fin_col)
+
+        net_income = to_float_or_none(net_income)
+        if net_income is not None:
+            eps_try = net_income / float(shares_f)
+            eps_try = to_float_or_none(eps_try)
+            # EPS can be negative; P/E would be unusable, but still return it.
+            if eps_try is not None:
+                eps_now = eps_try
+                sources["eps"] = "derived.net_income_over_shares"
+
+    # 3) Derive book value per share if needed
+    if book_now is None and shares_f > 0:
+        total_equity = safe_get_line(bs, [
+            "Total Stockholder Equity",
+            "Total stockholder equity",
+            "Total Equity Gross Minority Interest",
+            "Total Equity",
+            "Stockholders Equity",
+            "StockholdersEquity",
+            "Common Stock Equity",
+            "CommonStockEquity",
+        ], bs_col)
+        if total_equity is None:
+            # many feeds store as "Total equity" or "Total shareholders' equity"
+            total_equity = safe_get_line_contains(bs, ["total", "equity"], bs_col)
+        total_equity = to_float_or_none(total_equity)
+        if total_equity is not None:
+            bvps_try = total_equity / float(shares_f)
+            bvps_try = to_float_or_none(bvps_try)
+            if bvps_try is not None:
+                book_now = bvps_try
+                sources["book_value_per_share"] = "derived.total_equity_over_shares"
+
+    # 4) Derive EBITDA if needed
+    if ebitda_now is None:
+        # Try explicit EBITDA line first
+        ebitda_line = safe_get_line(fin, ["Ebitda", "EBITDA"], fin_col)
+        if ebitda_line is None:
+            ebitda_line = safe_get_line_contains(fin, ["ebitda"], fin_col)
+        ebitda_line = to_float_or_none(ebitda_line)
+        if ebitda_line is not None:
+            ebitda_now = ebitda_line
+            sources["ebitda"] = "financials.ebitda_line"
+
+    if ebitda_now is None:
+        # fallback: EBIT + D&A (or Operating Income + D&A)
+        ebit = safe_get_line(fin, [
+            "Ebit", "EBIT",
+            "Operating Income", "OperatingIncome",
+            "Total Operating Income As Reported", "TotalOperatingIncomeAsReported",
+            "Operating Profit", "OperatingProfit",
+        ], fin_col)
+        if ebit is None:
+            ebit = safe_get_line_contains(fin, ["operating", "income"], fin_col)
+        ebit = to_float_or_none(ebit)
+
+        da = safe_get_line(cf, ["Depreciation", "Depreciation And Amortization", "Depreciation & Amortization"], cf_col)
+        if da is None:
+            da = safe_get_line_contains(cf, ["depreciation"], cf_col)
+        da = to_float_or_none(da)
+
+        if ebit is not None and da is not None:
+            ebitda_try = ebit + da
+            ebitda_try = to_float_or_none(ebitda_try)
+            if ebitda_try is not None:
+                ebitda_now = ebitda_try
+                sources["ebitda"] = "derived.ebit_plus_da"
+
+    return {
+        "eps_now": eps_now,
+        "book_now": book_now,
+        "ebitda_now": ebitda_now,
+        "sources": sources,
+    }
+
 
 # =========================================================
 # 6) MARKET/BETA HELPERS (data-driven)
@@ -761,7 +901,6 @@ def dcf_per_share_from_fcff(
         raise ValueError("g not finite")
 
     g_term = min(g, market_long_run_g)
-    # If g_term is negative, allow it; but still must keep WACC > g_term
     if wacc <= g_term:
         raise ValueError(f"WACC ({wacc}) <= terminal growth ({g_term})")
 
@@ -781,10 +920,6 @@ def dcf_per_share_from_fcff(
 
 
 def backcast_series(current_value: float, g: float, years_ago_array: np.ndarray) -> np.ndarray:
-    """
-    Back-cast fundamentals using a single growth rate g:
-      value(t) = current_value / (1+g)^(years_ago)
-    """
     if current_value is None or not np.isfinite(current_value):
         raise ValueError("current_value invalid")
     return np.array([current_value / ((1.0 + g) ** y) for y in years_ago_array], dtype=float)
@@ -804,11 +939,6 @@ def solver_best_weights(
     sample_step: int = SOLVER_SAMPLE_STEP,
     grid_step: float = 0.1,
 ) -> dict:
-    """
-    Grid-search weights on simplex for available models, minimize MAPE on sampled points.
-    model_matrix shape: (n_models, n_days), aligned to actual_prices
-    available_mask: bool array length n_models, True if that model is usable (finite)
-    """
     if actual_prices.ndim != 1:
         raise ValueError("actual_prices must be 1D")
     n_days = actual_prices.shape[0]
@@ -819,19 +949,14 @@ def solver_best_weights(
     if np.any(~np.isfinite(y)) or np.all(y <= 0):
         raise ValueError("actual prices invalid for solver")
 
-    # build sampled model values
     X = model_matrix[:, idxs].copy()
-    # mark unusable models
     for j in range(n_models):
         if not available_mask[j]:
             X[j, :] = np.nan
 
-    # If none available -> fail
     if not np.any(available_mask):
         raise ValueError("No models available for solver")
 
-    # We will solve weights for up to 4 models (DCF, PE, PB, EV/EBITDA)
-    # Use grid on simplex; skip models not available by forcing weight=0.
     step = grid_step
     steps = [i * step for i in range(int(1 / step) + 1)]
 
@@ -845,18 +970,15 @@ def solver_best_weights(
                     continue
                 w = np.array([w0, w1, w2, w3], dtype=float)
 
-                # enforce unavailable models weight 0
                 w = w * available_mask.astype(float)
                 if np.sum(w) <= 0:
                     continue
                 w = normalize_weights_simplex(w)
 
                 pred = np.nansum(X.T * w, axis=1)
-                # If pred has NaN at any point, skip
                 if np.any(~np.isfinite(pred)):
                     continue
 
-                # MAPE
                 denom = np.where(y == 0, np.nan, y)
                 ape = np.abs((pred - y) / denom)
                 mape = float(np.nanmean(ape) * 100.0)
@@ -911,7 +1033,6 @@ def analyze_stock(request: StockRequest):
         stock_close = hist["Close"].astype(float).dropna()
         mkt_close = mkt_hist["Close"].astype(float).dropna()
 
-        # Align by date intersection for downstream
         aligned = pd.DataFrame({"stock": stock_close, "mkt": mkt_close}).dropna()
         if len(aligned) < 200:
             return JSONResponse({"error": "Not enough overlapping price history between stock and TASI."}, status_code=200)
@@ -919,7 +1040,6 @@ def analyze_stock(request: StockRequest):
         stock_close = aligned["stock"]
         mkt_close = aligned["mkt"]
 
-        # Use the aligned range for chart/backtest/solver
         current_price = float(stock_close.iloc[-1])
         prices_list = stock_close.tolist()
         dates_ms = (stock_close.index.astype(np.int64) // 10**6).tolist()
@@ -1066,7 +1186,6 @@ def analyze_stock(request: StockRequest):
                 elif interest_paid_cf is not None and np.isfinite(interest_paid_cf):
                     Rd = abs(float(interest_paid_cf)) / float(avg_D)
                     method_flags["wacc"] = "interest_paid_over_avg_debt"
-            # sanity
             if Rd is not None and (not np.isfinite(Rd) or Rd <= 0 or Rd > 0.50):
                 Rd = None
 
@@ -1078,16 +1197,12 @@ def analyze_stock(request: StockRequest):
             WACC = wE * Re + wD * Rd * (1.0 - T)
             method_flags["wacc"] = method_flags["wacc"] or "wacc_full"
         else:
-            # If debt is unknown/interest missing, we cannot compute a reliable Rd from statements.
-            # Best-effort: equity-only discount rate, flagged explicitly.
             WACC = Re
             method_flags["wacc"] = "equity_only_Re"
 
         # ---------- Growth (best-effort, data-driven) ----------
-        # Primary: ROIC * reinvestment if we have NOPAT and invested capital, else fallback to price CAGR
         g = None
 
-        # EBIT
         EBIT = safe_get_line(fin, [
             "Ebit", "EBIT",
             "Operating Income", "OperatingIncome",
@@ -1097,17 +1212,14 @@ def analyze_stock(request: StockRequest):
         if EBIT is None:
             EBIT = safe_get_line_contains(fin, ["operating", "income"], fin_col)
 
-        # D&A
         DA = safe_get_line(cf, ["Depreciation", "Depreciation And Amortization", "Depreciation & Amortization"], cf_col)
         if DA is None:
             DA = safe_get_line_contains(cf, ["depreciation"], cf_col)
 
-        # CapEx (cash flow often negative)
         CapEx = safe_get_line(cf, ["Capital Expenditures", "Capital Expenditure"], cf_col)
         if CapEx is None:
             CapEx = safe_get_line_contains(cf, ["capital", "expend"], cf_col)
 
-        # Working capital delta (best-effort)
         def net_working_capital(bs_df: pd.DataFrame, col):
             tca = safe_get_line(bs_df, ["Total Current Assets"], col)
             tcl = safe_get_line(bs_df, ["Total Current Liabilities"], col)
@@ -1125,19 +1237,16 @@ def analyze_stock(request: StockRequest):
             if NWC_now is not None and NWC_prev is not None and np.isfinite(NWC_now) and np.isfinite(NWC_prev):
                 dWC = float(NWC_now - NWC_prev)
 
-        # Build FCFF0 if possible; else fallback to CFO - CapEx (owner earnings proxy)
         fcff0 = None
         fcff_method = None
 
         if EBIT is not None and np.isfinite(EBIT) and DA is not None and np.isfinite(DA) and CapEx is not None and np.isfinite(CapEx) and dWC is not None and np.isfinite(dWC):
             NOPAT = float(EBIT) * (1.0 - T)
             capex_out = -float(CapEx) if float(CapEx) < 0 else float(CapEx)
-            # FCFF0 = NOPAT + D&A - CapEx - dWC
             fcff0 = NOPAT + float(DA) - capex_out - float(dWC)
             if np.isfinite(fcff0) and fcff0 > 0:
                 fcff_method = "ebit_da_capex_dwc"
         if fcff0 is None:
-            # CFO fallback: Operating Cash Flow - CapEx
             CFO = safe_get_line(cf, ["Total Cash From Operating Activities", "Operating Cash Flow", "OperatingCashFlow"], cf_col)
             if CFO is None:
                 CFO = safe_get_line_contains(cf, ["operating", "cash"], cf_col)
@@ -1147,9 +1256,7 @@ def analyze_stock(request: StockRequest):
                 if np.isfinite(fcff0) and fcff0 > 0:
                     fcff_method = "cfo_minus_capex"
 
-        # Growth:
         if fcff0 is not None and fcff0 > 0 and EBIT is not None and np.isfinite(EBIT):
-            # Try ROIC*reinvestment if we can estimate invested capital
             NOPAT = float(EBIT) * (1.0 - T)
             invested_capital = (E + D - cash)
             if np.isfinite(invested_capital) and invested_capital > 0 and np.isfinite(NOPAT) and NOPAT > 0 and DA is not None and CapEx is not None and dWC is not None:
@@ -1161,7 +1268,6 @@ def analyze_stock(request: StockRequest):
                     g = g_try
                     method_flags["growth"] = "roic_x_reinvestment"
         if g is None:
-            # fallback: price CAGR (data-driven), capped only by sanity bounds (not "hard-coded model assumptions")
             try:
                 years = (len(stock_close) - 1) / TRADING_DAYS
                 p0 = float(stock_close.iloc[0])
@@ -1169,7 +1275,6 @@ def analyze_stock(request: StockRequest):
                 if p0 > 0 and p1 > 0 and years > 0:
                     g_try = (p1 / p0) ** (1.0 / years) - 1.0
                     if np.isfinite(g_try):
-                        # sanity bounds only
                         g_try = max(-0.20, min(g_try, 0.40))
                         g = g_try
                         method_flags["growth"] = "price_cagr"
@@ -1186,44 +1291,35 @@ def analyze_stock(request: StockRequest):
         except Exception:
             g_mkt = rm_exp if np.isfinite(rm_exp) else 0.03
 
-        # ---------- Current fundamentals for multiples ----------
-        eps_now = info.get("trailingEps")
-        book_now = info.get("bookValue")
+        # ---------- NEW: derive multiples inputs robustly ----------
+        derived = derive_eps_book_ebitda(
+            info=info,
+            fin=fin,
+            bs=bs,
+            cf=cf,
+            fin_col=fin_col,
+            bs_col=bs_col,
+            cf_col=cf_col,
+            shares_f=float(shares_f),
+        )
+        eps_now = derived["eps_now"]
+        book_now = derived["book_now"]
+        EBITDA = derived["ebitda_now"]
+        mult_sources = derived["sources"]
 
-        def to_float_or_none(x):
-            try:
-                if x is None:
-                    return None
-                v = float(x)
-                if not np.isfinite(v):
-                    return None
-                return v
-            except Exception:
-                return None
-
-        eps_now = to_float_or_none(eps_now)
-        book_now = to_float_or_none(book_now)
-
-        # EBITDA from statements (best-effort)
-        EBITDA = safe_get_line(fin, ["Ebitda", "EBITDA"], fin_col)
-        if EBITDA is None:
-            EBITDA = safe_get_line_contains(fin, ["ebitda"], fin_col)
-        EBITDA = to_float_or_none(EBITDA)
-
-        # Current observed multiples (only if inputs exist)
+        # Current observed multiples (only if inputs exist and meaningful)
         pe_ratio_now = None
-        if eps_now is not None and eps_now != 0:
+        if eps_now is not None and np.isfinite(eps_now) and eps_now != 0:
             pe_ratio_now = current_price / eps_now
 
         pb_ratio_now = None
-        if book_now is not None and book_now != 0:
+        if book_now is not None and np.isfinite(book_now) and book_now != 0:
             pb_ratio_now = current_price / book_now
 
-        # EV/EBITDA observed now
         ev_ebitda_now = None
-        if EBITDA is not None and EBITDA != 0:
+        if EBITDA is not None and np.isfinite(EBITDA) and EBITDA != 0:
             EV_now = E + D - cash
-            ev_ebitda_now = EV_now / EBITDA if EBITDA != 0 else None
+            ev_ebitda_now = EV_now / EBITDA
 
         # ---------- Build time series of model prices over 5y for solver ----------
         years_ago_array = np.linspace(5.0, 0.0, n_days)
@@ -1245,14 +1341,12 @@ def analyze_stock(request: StockRequest):
             "ev_ebitda": None,
         }
 
-        # DCF series: use fcff0 backcast if available
+        # DCF series
         stream_dcf = np.full(n_days, np.nan, dtype=float)
         if fcff0 is not None and np.isfinite(fcff0) and fcff0 > 0 and np.isfinite(WACC) and WACC > 0:
             try:
                 fcff_series = backcast_series(float(fcff0), float(g), years_ago_array)
                 for i in range(n_days):
-                    # per-share DCF at each historical date using the backcast base FCFF
-                    # (We discount forward from that date)
                     stream_dcf[i] = dcf_per_share_from_fcff(
                         fcff0=float(fcff_series[i]),
                         wacc=float(WACC),
@@ -1266,13 +1360,12 @@ def analyze_stock(request: StockRequest):
             except Exception:
                 pass
 
-        # PE series: requires EPS now (we backcast EPS with g, and use target multiple = median of observed PE over history)
+        # PE series (requires eps_now; we backcast EPS with g)
         stream_pe = np.full(n_days, np.nan, dtype=float)
         target_pe = None
-        if eps_now is not None and eps_now > 0:
+        if eps_now is not None and np.isfinite(eps_now) and eps_now > 0:
             try:
                 eps_series = backcast_series(float(eps_now), float(g), years_ago_array)
-                # observed PE history (using eps_series, not constant EPS)
                 pe_hist = np.array(prices_list, dtype=float) / np.where(eps_series == 0, np.nan, eps_series)
                 pe_hist = pe_hist[np.isfinite(pe_hist) & (pe_hist > 0)]
                 if len(pe_hist) >= 60:
@@ -1283,10 +1376,10 @@ def analyze_stock(request: StockRequest):
             except Exception:
                 pass
 
-        # PB series: requires book value now (backcast BV with g, target PB = median observed PB history)
+        # PB series (requires book_now; backcast BVPS with g)
         stream_pb = np.full(n_days, np.nan, dtype=float)
         target_pb = None
-        if book_now is not None and book_now > 0:
+        if book_now is not None and np.isfinite(book_now) and book_now > 0:
             try:
                 book_series = backcast_series(float(book_now), float(g), years_ago_array)
                 pb_hist = np.array(prices_list, dtype=float) / np.where(book_series == 0, np.nan, book_series)
@@ -1299,21 +1392,18 @@ def analyze_stock(request: StockRequest):
             except Exception:
                 pass
 
-        # EV/EBITDA series: requires EBITDA now. We backcast EBITDA with g and use target EV/EBITDA = median observed.
+        # EV/EBITDA series (requires EBITDA; backcast EBITDA with g)
         stream_ev_ebitda = np.full(n_days, np.nan, dtype=float)
         target_ev_ebitda = None
-        if EBITDA is not None and EBITDA > 0:
+        if EBITDA is not None and np.isfinite(EBITDA) and EBITDA > 0:
             try:
                 ebitda_series = backcast_series(float(EBITDA), float(g), years_ago_array)
-                EV_now = E + D - cash
-                # Approx historical EV: assume net debt constant over time (best-effort; flagged by method)
                 ev_hist = (np.array(prices_list, dtype=float) * float(shares_f)) + float(net_debt)
                 ev_eb_hist = ev_hist / np.where(ebitda_series == 0, np.nan, ebitda_series)
                 ev_eb_hist = ev_eb_hist[np.isfinite(ev_eb_hist) & (ev_eb_hist > 0)]
                 if len(ev_eb_hist) >= 60:
                     target_ev_ebitda = float(np.nanmedian(ev_eb_hist))
                 if target_ev_ebitda is not None and np.isfinite(target_ev_ebitda) and target_ev_ebitda > 0:
-                    # Per-share: (EV - net_debt)/shares
                     ev_model = ebitda_series * target_ev_ebitda
                     eq_model = ev_model - float(net_debt)
                     stream_ev_ebitda = eq_model / float(shares_f)
@@ -1331,7 +1421,7 @@ def analyze_stock(request: StockRequest):
             np.any(np.isfinite(stream_ev_ebitda)),
         ], dtype=bool)
 
-        # ---------- Solve weights for best fit on history ----------
+        # ---------- Solve weights ----------
         try:
             opt = solver_best_weights(
                 actual_prices=actual,
@@ -1342,7 +1432,6 @@ def analyze_stock(request: StockRequest):
             )
             weights_full = opt["weights"]
         except Exception as e:
-            # If solver fails, fall back to "use whatever is available" equal weights
             if not np.any(available_mask):
                 return JSONResponse({"error": f"No valuation models available for this ticker (statements missing). Detail: {str(e)}"}, status_code=200)
             w = available_mask.astype(float)
@@ -1355,7 +1444,6 @@ def analyze_stock(request: StockRequest):
         k = calibration_k(actual, combined)
         fair_values_full = (combined * k).tolist()
 
-        # Current model values (at t=now), calibrated
         current_model_values = {
             "dcf": (float(stream_dcf[-1]) * k) if np.isfinite(stream_dcf[-1]) else None,
             "pe": (float(stream_pe[-1]) * k) if np.isfinite(stream_pe[-1]) else None,
@@ -1363,7 +1451,6 @@ def analyze_stock(request: StockRequest):
             "ev_ebitda": (float(stream_ev_ebitda[-1]) * k) if np.isfinite(stream_ev_ebitda[-1]) else None,
         }
 
-        # Final fair value is calibrated combined at now
         combined_now = float(combined[-1]) if np.isfinite(combined[-1]) else None
         fair_value = (combined_now * k) if combined_now is not None else None
         if fair_value is None or not np.isfinite(fair_value) or fair_value <= 0:
@@ -1377,7 +1464,7 @@ def analyze_stock(request: StockRequest):
         elif upside < -10:
             verdict = "Overvalued"
 
-        # DCF projections (show per-share FCFF forecast values for transparency if FCFF available)
+        # DCF projections
         dcf_projections = []
         if fcff0 is not None and np.isfinite(fcff0) and fcff0 > 0:
             for i in range(1, FORECAST_YEARS + 1):
@@ -1403,7 +1490,6 @@ def analyze_stock(request: StockRequest):
             "2y": ret_pct(504),
         }
 
-        # Backtest points (use the calibrated combined fair series)
         backtest_points = []
         for label, days in [("1 Year Ago", 252), ("2 Years Ago", 504), ("3 Years Ago", 756), ("4 Years Ago", 1008), ("5 Years Ago", 1250)]:
             if n_days > days:
@@ -1414,7 +1500,6 @@ def analyze_stock(request: StockRequest):
                     "model": float(fair_values_full[idx]) if fair_values_full[idx] is not None else None,
                 })
 
-        # Put current models in a consistent dict used by your return block
         current_models.update({
             "dcf": current_model_values["dcf"],
             "pe": current_model_values["pe"],
@@ -1424,7 +1509,6 @@ def analyze_stock(request: StockRequest):
 
         source_used = f"{source_stock} (stock prices), {source_mkt} (market prices), Yahoo (statements), Excel (risk-free)"
 
-        # ---------- FINAL RESPONSE (JSON safe) ----------
         result = {
             "valuation_summary": {
                 "company_name": company_name,
@@ -1469,11 +1553,16 @@ def analyze_stock(request: StockRequest):
                 "cash": float(cash) if np.isfinite(cash) else None,
                 "net_debt": float(net_debt) if np.isfinite(net_debt) else None,
                 "method_flags": method_flags,
+                "multiples_inputs_source": mult_sources,
                 "multiples_targets": {
                     "target_pe_median": target_pe,
                     "target_pb_median": target_pb,
                     "target_ev_ebitda_median": target_ev_ebitda,
                 },
+                "multiples_now": {
+                    "pb_ratio_now": pb_ratio_now,
+                    "ev_ebitda_now": ev_ebitda_now,
+                }
             },
             "returns": returns,
             "backtest": backtest_points,
@@ -1492,7 +1581,6 @@ def analyze_stock(request: StockRequest):
         return JSONResponse(content=json_safe(result), status_code=200)
 
     except Exception as e:
-        # Always return JSON to prevent frontend JSON.parse failures
         return JSONResponse({"error": f"{type(e).__name__}: {str(e)}"}, status_code=200)
 
 
