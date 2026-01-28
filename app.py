@@ -769,9 +769,15 @@ def analyze_stock(request: StockRequest):
 
     NWC_now = net_working_capital(bs, bs_col)
     NWC_prev = net_working_capital(bs, bs_col_prev)
+
     if NWC_now is None or NWC_prev is None:
-        return {"error": "Missing current assets/liabilities needed for ΔWC. Cannot compute FCFF."}
-    dWC = float(NWC_now - NWC_prev)
+    # Explicit assumption: ΔWC ≈ 0 when data is unavailable
+        dWC = 0.0
+        wc_note = "ΔWC assumed 0 due to missing current asset/liability data"
+    else:
+        dWC = float(NWC_now - NWC_prev)
+        wc_note = "ΔWC computed from balance sheet"
+
 
     # NOPAT
     NOPAT = float(EBIT) * (1.0 - T)
