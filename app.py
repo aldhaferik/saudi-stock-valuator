@@ -1,15 +1,22 @@
 # app.py
 from __future__ import annotations
+
+import os
+import math
+import time
+import random
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Dict, Any, Optional, Tuple, List
+
+import numpy as np
+import pandas as pd
+import requests
+
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import os
-import math
-import requests
-import pandas as pd
-import numpy as np
-from datetime import datetime
 
 # =========================================================
 # 0) APP + CORS
@@ -25,16 +32,21 @@ app.add_middleware(
 )
 
 # =========================================================
-# 1) CONFIG (NO hard-coded finance "assumptions" like fixed rf/mrp/sector PE)
-#    - Uses: market index history (TASI) + your Excel yields file + company statements when available.
+# 1) CONFIG
+#    - Goal: accuracy via time-aligned fundamentals (TTM/quarterly -> daily forward-fill)
 # =========================================================
 DEFAULT_HISTORY_PERIOD = "5y"
 TRADING_DAYS = 252
-BETA_LOOKBACK_DAYS = TRADING_DAYS * 2
-MARKET_RETURN_LOOKBACK_DAYS = TRADING_DAYS * 5
-SOLVER_SAMPLE_STEP = 21  # ~monthly samples
-FORECAST_YEARS = 5
 
+# windows
+BETA_LOOKBACK_DAYS = TRADING_DAYS * 2              # ~2y
+MARKET_RETURN_LOOKBACK_DAYS = TRADING_DAYS * 5     # ~5y
+TRAIN_WINDOW_DAYS = TRADING_DAYS * 3               # train weights on last 3y
+TEST_WINDOW_DAYS = TRADING_DAYS * 1                # test on last 1y (walk-forward)
+SOLVER_SAMPLE_STEP = 5                             # sample every ~week for optimization
+N_WEIGHT_SAMPLES = 6000                            # continuous-ish (Dirichlet) search
+
+FORECAST_YEARS = 5
 TASI_TICKER = "^TASI.SR"
 
 # Backup price sources (you requested)
@@ -45,9 +57,13 @@ TWELVE_DATA_KEY = "ed240f406bab4225ac6e0a98be553aa2"
 RISK_FREE_XLSX_PATH = "saudi_yields.xlsx"
 RISK_FREE_COLUMN_NAME = "10-Year government bond yield"
 
+# Robustness bounds (sanity only, not a finance “assumption”)
+GROWTH_MIN = -0.20
+GROWTH_MAX = 0.40
+WACC_MAX = 0.50
 
 # =========================================================
-# 2) JSON-SAFE SERIALIZATION (prevents HTTP 500 due to NaN/Inf)
+# 2) JSON-SAFE SERIALIZATION
 # =========================================================
 def json_safe(obj):
     if obj is None:
@@ -69,9 +85,8 @@ def json_safe(obj):
 
     return obj
 
-
 # =========================================================
-# 3) SMALL HTML UI (keeps the API contract; you can replace with your own UI)
+# 3) SMALL HTML UI (unchanged)
 # =========================================================
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
@@ -160,7 +175,7 @@ async def read_root():
     <div class="loading" id="loading">
         <div class="spinner"></div>
         <h3>Calculating Intrinsic Value...</h3>
-        <p style="color:#666; font-size:14px;">Deriving WACC, FCFF, Beta and Growth from Real Data</p>
+        <p style="color:#666; font-size:14px;">Time-aligning fundamentals (TTM) + walk-forward tuning</p>
     </div>
 
     <div id="error" style="display:none; padding: 15px; background: #ffebee; color: #c62828; border-radius: 8px; margin-bottom: 20px;"></div>
@@ -215,7 +230,7 @@ async def read_root():
 
                 <div class="fv-row">
                     <div style="width:70%">
-                        <span class="fv-label">Forward P/E Model</span>
+                        <span class="fv-label">P/E Model (TTM)</span>
                         <div class="weight-container">
                             <div class="weight-bar"><div class="weight-fill" id="w_pe_fill"></div></div>
                         </div>
@@ -228,7 +243,7 @@ async def read_root():
 
                 <div class="fv-row">
                     <div style="width:70%">
-                        <span class="fv-label">P/B Asset Model</span>
+                        <span class="fv-label">P/B Model</span>
                         <div class="weight-container">
                             <div class="weight-bar"><div class="weight-fill" id="w_pb_fill"></div></div>
                         </div>
@@ -241,7 +256,7 @@ async def read_root():
 
                 <div class="fv-row">
                     <div style="width:70%">
-                        <span class="fv-label">EV/EBITDA Model</span>
+                        <span class="fv-label">EV/EBITDA Model (TTM)</span>
                         <div class="weight-container">
                             <div class="weight-bar"><div class="weight-fill" id="w_ev_ebitda_fill"></div></div>
                         </div>
@@ -261,13 +276,13 @@ async def read_root():
 
         <div class="bottom-section">
             <div class="card">
-                <div class="card-title">Solver Performance (Backtest)</div>
+                <div class="card-title">Walk-forward Backtest</div>
                 <table class="data-table">
                     <thead>
                         <tr>
                             <th>Period</th>
                             <th>Actual Price</th>
-                            <th>Optimized Model</th>
+                            <th>Model</th>
                             <th>Error</th>
                         </tr>
                     </thead>
@@ -285,12 +300,12 @@ async def read_root():
                     <div class="ret-box"><div class="ret-label">2Y</div><div class="ret-val" id="r2y">--</div></div>
                 </div>
 
-                <div class="card-title">Future Projections</div>
+                <div class="card-title">Future Projections (DCF)</div>
                 <table class="data-table">
                     <thead>
                         <tr>
                             <th>Year</th>
-                            <th>Projected Value</th>
+                            <th>Projected FCFF</th>
                             <th>Growth</th>
                         </tr>
                     </thead>
@@ -370,17 +385,14 @@ async function analyze() {
         document.getElementById('wacc_display').innerText =
             (m.wacc === null || m.wacc === undefined) ? "N/A" : (Number(m.wacc) * 100).toFixed(1) + "%";
 
-        // Tags
         document.getElementById('beta_tag').innerHTML = '<span class="dyn-badge">LIVE</span>';
-        document.getElementById('growth_tag').innerHTML = '<span class="dyn-badge">LIVE</span>';
+        document.getElementById('growth_tag').innerHTML = '<span class="dyn-badge">TTM</span>';
 
-        // Model values
         document.getElementById('dcf_val').innerText = fmt(s.model_breakdown?.dcf);
         document.getElementById('pe_val').innerText = fmt(s.model_breakdown?.pe_model);
         document.getElementById('pb_val').innerText = fmt(s.model_breakdown?.pb_model);
         document.getElementById('ev_ebitda_val').innerText = fmt(s.model_breakdown?.ev_ebitda_model);
 
-        // Weights bars
         const setW = (key, val) => {
             const pct = ((val ?? 0) * 100).toFixed(0) + "%";
             const fill = document.getElementById(`w_${key}_fill`);
@@ -393,7 +405,6 @@ async function analyze() {
         setW('pb', weights?.pb);
         setW('ev_ebitda', weights?.ev_ebitda);
 
-        // Returns
         const setRet = (id, val) => {
             const el = document.getElementById(id);
             if (!el) return;
@@ -408,7 +419,6 @@ async function analyze() {
         setRet('r1y', r?.["1y"]);
         setRet('r2y', r?.["2y"]);
 
-        // Forecast
         const fcBody = document.getElementById('forecastBody');
         if (fcBody) {
             fcBody.innerHTML = "";
@@ -417,14 +427,13 @@ async function analyze() {
             projections.forEach((val, i) => {
                 const row = `<tr>
                     <td>${currentYear + i + 1}</td>
-                    <td>${Number(val).toFixed(2)} SAR</td>
+                    <td>${Number(val).toFixed(0)} SAR</td>
                     <td style="color:#28cd41;">+${(Number(m.growth_rate || 0) * 100).toFixed(1)}%</td>
                 </tr>`;
                 fcBody.innerHTML += row;
             });
         }
 
-        // Backtest
         const btBody = document.getElementById('backtestBody');
         if (btBody) {
             btBody.innerHTML = "";
@@ -443,7 +452,6 @@ async function analyze() {
             });
         }
 
-        // Chart
         const dates = data.historical_data?.dates || [];
         const prices = data.historical_data?.prices || [];
         const fairVals = data.historical_data?.fair_values || [];
@@ -451,7 +459,7 @@ async function analyze() {
         if (dates.length && prices.length && fairVals.length) {
             Highcharts.chart('chartContainer', {
                 chart: { backgroundColor: 'transparent' },
-                title: { text: 'Price vs Optimized Model' },
+                title: { text: 'Price vs Model (TTM fundamentals + walk-forward weights)' },
                 xAxis: { type: 'datetime' },
                 yAxis: { title: { text: null }, gridLineColor: '#eee' },
                 series: [{
@@ -459,7 +467,7 @@ async function analyze() {
                     data: dates.map((d, i) => [d, prices[i]]),
                     type: 'area'
                 }, {
-                    name: 'Optimized Fair Value',
+                    name: 'Model Fair Value',
                     data: dates.map((d, i) => [d, fairVals[i]]),
                     type: 'line',
                     lineWidth: 2
@@ -483,9 +491,11 @@ async function analyze() {
 </html>
 """
 
-
 # =========================================================
-# 4) DATA FETCHER (Yahoo primary, Twelve Data / Alpha Vantage price backups)
+# 4) DATA FETCHER (prices + statements)
+#    - Accuracy improvements:
+#      - quarterly/TTM fundamentals from report dates
+#      - time-varying net debt & (best-effort) shares from statements where possible
 # =========================================================
 class DataFetcher:
     def __init__(self):
@@ -495,7 +505,7 @@ class DataFetcher:
         ]
 
     def _headers(self):
-        return {"User-Agent": np.random.choice(self.user_agents)}
+        return {"User-Agent": random.choice(self.user_agents)}
 
     @staticmethod
     def clean_saudi_ticker(ticker: str) -> str:
@@ -568,7 +578,7 @@ class DataFetcher:
             raise ValueError("Alpha Vantage: empty parsed dataframe.")
         return df[["Close"]]
 
-    def fetch_prices(self, ticker: str, period: str = DEFAULT_HISTORY_PERIOD) -> tuple[pd.DataFrame, str]:
+    def fetch_prices(self, ticker: str, period: str = DEFAULT_HISTORY_PERIOD) -> Tuple[pd.DataFrame, str]:
         try:
             return self.fetch_prices_yahoo(ticker, period=period), "Yahoo Finance"
         except Exception:
@@ -582,32 +592,41 @@ class DataFetcher:
         except Exception as e:
             raise ValueError(f"All price sources failed: {str(e)}")
 
-    # ---------- Statements ----------
-    def fetch_statements_yahoo(self, ticker: str) -> dict:
+    # ---------- Statements (Yahoo via yfinance) ----------
+    def fetch_statements_yahoo(self, ticker: str) -> Dict[str, Any]:
         import yfinance as yf
         stock = yf.Ticker(ticker)
+
         try:
             info = stock.info or {}
         except Exception:
             info = {}
 
-        fin = None
-        bs = None
-        cf = None
-        try:
-            fin = stock.financials
-        except Exception:
-            fin = None
-        try:
-            bs = stock.balance_sheet
-        except Exception:
-            bs = None
-        try:
-            cf = stock.cashflow
-        except Exception:
-            cf = None
+        def safe_attr(name: str):
+            try:
+                return getattr(stock, name)
+            except Exception:
+                return None
 
-        return {"info": info, "financials": fin, "balance_sheet": bs, "cashflow": cf}
+        # Annual
+        fin_a = safe_attr("financials")
+        bs_a = safe_attr("balance_sheet")
+        cf_a = safe_attr("cashflow")
+
+        # Quarterly
+        fin_q = safe_attr("quarterly_financials")
+        bs_q = safe_attr("quarterly_balance_sheet")
+        cf_q = safe_attr("quarterly_cashflow")
+
+        return {
+            "info": info,
+            "financials_annual": fin_a,
+            "balance_sheet_annual": bs_a,
+            "cashflow_annual": cf_a,
+            "financials_quarterly": fin_q,
+            "balance_sheet_quarterly": bs_q,
+            "cashflow_quarterly": cf_q,
+        }
 
     # ---------- Risk-free (Excel) ----------
     def fetch_saudi_risk_free_from_excel(self, path: str, column_name: str) -> float:
@@ -637,62 +656,10 @@ class DataFetcher:
             raise ValueError(f"Risk-free out of bounds after parsing: {rf}")
         return rf
 
-
 # =========================================================
-# 5) STATEMENT HELPERS
+# 5) STATEMENT + SERIES HELPERS (time-aligned fundamentals)
 # =========================================================
-def most_recent_col(df: pd.DataFrame):
-    if df is None or df.empty:
-        return None
-    cols = list(df.columns)
-    try:
-        cols_sorted = sorted(cols, reverse=True)
-        return cols_sorted[0]
-    except Exception:
-        return cols[0]
-
-def second_most_recent_col(df: pd.DataFrame):
-    if df is None or df.empty:
-        return None
-    cols = list(df.columns)
-    try:
-        cols_sorted = sorted(cols, reverse=True)
-        return cols_sorted[1] if len(cols_sorted) > 1 else None
-    except Exception:
-        return cols[1] if len(cols) > 1 else None
-
-def safe_get_line(df: pd.DataFrame, possible_names: list[str], col) -> float | None:
-    if df is None or df.empty or col is None:
-        return None
-    for name in possible_names:
-        if name in df.index:
-            val = df.loc[name, col]
-            if pd.isna(val):
-                continue
-            try:
-                return float(val)
-            except Exception:
-                continue
-    return None
-
-def safe_get_line_contains(df: pd.DataFrame, must_contain: list[str], col) -> float | None:
-    if df is None or df.empty or col is None:
-        return None
-    must_contain = [m.lower() for m in must_contain]
-    for idx in df.index:
-        s = str(idx).lower()
-        ok = all(m in s for m in must_contain)
-        if ok:
-            val = df.loc[idx, col]
-            if pd.isna(val):
-                continue
-            try:
-                return float(val)
-            except Exception:
-                continue
-    return None
-
-def to_float_or_none(x):
+def _to_float(x) -> Optional[float]:
     try:
         if x is None:
             return None
@@ -703,145 +670,65 @@ def to_float_or_none(x):
     except Exception:
         return None
 
-# --- NEW: robust multiples inputs derived from statements when Yahoo "info" is missing ---
-def derive_eps_book_ebitda(
-    info: dict,
-    fin: pd.DataFrame,
-    bs: pd.DataFrame,
-    cf: pd.DataFrame,
-    fin_col,
-    bs_col,
-    cf_col,
-    shares_f: float,
-) -> dict:
-    """
-    Returns:
-      eps_now, book_now, ebitda_now, sources dict.
-    Priority:
-      1) Yahoo info fields if present and finite
-      2) Derive from statements (annual column):
-           EPS = Net Income / shares
-           Book value per share = Total Equity / shares
-           EBITDA = EBITDA line OR (EBIT + D&A) OR (Operating Income + D&A)
-    Notes:
-      - If Net Income or Total Equity are missing, those fallbacks remain None.
-      - EBITDA needs currency amount (not per-share).
-    """
-    sources = {
-        "eps": None,
-        "book_value_per_share": None,
-        "ebitda": None,
-    }
+def _row_lookup(df: pd.DataFrame, names: List[str]) -> Optional[pd.Series]:
+    if df is None or df.empty:
+        return None
+    idx_lower = {str(i).strip().lower(): i for i in df.index}
+    for n in names:
+        key = str(n).strip().lower()
+        if key in idx_lower:
+            return df.loc[idx_lower[key]]
+    return None
 
-    # 1) Yahoo info
-    eps_info = to_float_or_none(info.get("trailingEps"))
-    book_info = to_float_or_none(info.get("bookValue"))
+def _row_contains(df: pd.DataFrame, must_contain: List[str]) -> Optional[pd.Series]:
+    if df is None or df.empty:
+        return None
+    must = [m.lower() for m in must_contain]
+    for idx in df.index:
+        s = str(idx).lower()
+        if all(m in s for m in must):
+            return df.loc[idx]
+    return None
 
-    # EBITDA usually not reliable in info for many tickers; still check.
-    ebitda_info = to_float_or_none(info.get("ebitda"))
+def _series_from_row(df: pd.DataFrame, row_names: List[str], contains: Optional[List[str]] = None) -> Optional[pd.Series]:
+    r = _row_lookup(df, row_names)
+    if r is None and contains is not None:
+        r = _row_contains(df, contains)
+    if r is None:
+        return None
+    s = pd.to_numeric(r, errors="coerce")
+    s.index = pd.to_datetime(s.index)
+    s = s.sort_index()
+    return s
 
-    eps_now = eps_info
-    if eps_now is not None:
-        sources["eps"] = "yahoo_info.trailingEps"
+def ttm_from_quarters(q_series: pd.Series) -> pd.Series:
+    # q_series indexed by report date; compute rolling sum of last 4 quarters
+    s = q_series.sort_index()
+    return s.rolling(4, min_periods=4).sum()
 
-    book_now = book_info
-    if book_now is not None:
-        sources["book_value_per_share"] = "yahoo_info.bookValue"
+def last_value_on_or_before(series: pd.Series, dates: pd.DatetimeIndex) -> pd.Series:
+    # forward-fill to dates based on last known report date
+    if series is None or series.empty:
+        return pd.Series(index=dates, dtype=float)
+    s = series.sort_index()
+    out = pd.Series(index=dates, dtype=float)
+    # reindex to union then ffill
+    tmp = s.reindex(s.index.union(dates)).sort_index().ffill()
+    out[:] = tmp.reindex(dates).values
+    return out
 
-    ebitda_now = ebitda_info
-    if ebitda_now is not None:
-        sources["ebitda"] = "yahoo_info.ebitda"
-
-    # 2) Derive EPS if needed
-    if eps_now is None and shares_f > 0:
-        net_income = safe_get_line(fin, [
-            "Net Income",
-            "Net Income Common Stockholders",
-            "Net Income Applicable To Common Shares",
-            "Net Income From Continuing Operations",
-            "NetIncome",
-            "NetIncomeCommonStockholders",
-        ], fin_col)
-        if net_income is None:
-            net_income = safe_get_line_contains(fin, ["net", "income"], fin_col)
-
-        net_income = to_float_or_none(net_income)
-        if net_income is not None:
-            eps_try = net_income / float(shares_f)
-            eps_try = to_float_or_none(eps_try)
-            # EPS can be negative; P/E would be unusable, but still return it.
-            if eps_try is not None:
-                eps_now = eps_try
-                sources["eps"] = "derived.net_income_over_shares"
-
-    # 3) Derive book value per share if needed
-    if book_now is None and shares_f > 0:
-        total_equity = safe_get_line(bs, [
-            "Total Stockholder Equity",
-            "Total stockholder equity",
-            "Total Equity Gross Minority Interest",
-            "Total Equity",
-            "Stockholders Equity",
-            "StockholdersEquity",
-            "Common Stock Equity",
-            "CommonStockEquity",
-        ], bs_col)
-        if total_equity is None:
-            # many feeds store as "Total equity" or "Total shareholders' equity"
-            total_equity = safe_get_line_contains(bs, ["total", "equity"], bs_col)
-        total_equity = to_float_or_none(total_equity)
-        if total_equity is not None:
-            bvps_try = total_equity / float(shares_f)
-            bvps_try = to_float_or_none(bvps_try)
-            if bvps_try is not None:
-                book_now = bvps_try
-                sources["book_value_per_share"] = "derived.total_equity_over_shares"
-
-    # 4) Derive EBITDA if needed
-    if ebitda_now is None:
-        # Try explicit EBITDA line first
-        ebitda_line = safe_get_line(fin, ["Ebitda", "EBITDA"], fin_col)
-        if ebitda_line is None:
-            ebitda_line = safe_get_line_contains(fin, ["ebitda"], fin_col)
-        ebitda_line = to_float_or_none(ebitda_line)
-        if ebitda_line is not None:
-            ebitda_now = ebitda_line
-            sources["ebitda"] = "financials.ebitda_line"
-
-    if ebitda_now is None:
-        # fallback: EBIT + D&A (or Operating Income + D&A)
-        ebit = safe_get_line(fin, [
-            "Ebit", "EBIT",
-            "Operating Income", "OperatingIncome",
-            "Total Operating Income As Reported", "TotalOperatingIncomeAsReported",
-            "Operating Profit", "OperatingProfit",
-        ], fin_col)
-        if ebit is None:
-            ebit = safe_get_line_contains(fin, ["operating", "income"], fin_col)
-        ebit = to_float_or_none(ebit)
-
-        da = safe_get_line(cf, ["Depreciation", "Depreciation And Amortization", "Depreciation & Amortization"], cf_col)
-        if da is None:
-            da = safe_get_line_contains(cf, ["depreciation"], cf_col)
-        da = to_float_or_none(da)
-
-        if ebit is not None and da is not None:
-            ebitda_try = ebit + da
-            ebitda_try = to_float_or_none(ebitda_try)
-            if ebitda_try is not None:
-                ebitda_now = ebitda_try
-                sources["ebitda"] = "derived.ebit_plus_da"
-
-    return {
-        "eps_now": eps_now,
-        "book_now": book_now,
-        "ebitda_now": ebitda_now,
-        "sources": sources,
-    }
-
+def winsorize(arr: np.ndarray, p_low=0.05, p_high=0.95) -> np.ndarray:
+    x = arr.copy()
+    x = x[np.isfinite(x)]
+    if x.size == 0:
+        return arr
+    lo = np.quantile(x, p_low)
+    hi = np.quantile(x, p_high)
+    out = np.clip(arr, lo, hi)
+    return out
 
 # =========================================================
-# 6) MARKET/BETA HELPERS (data-driven)
+# 6) MARKET/BETA HELPERS
 # =========================================================
 def annualized_geo_mean_return(prices: pd.Series, periods_per_year: int = TRADING_DAYS) -> float:
     prices = prices.dropna()
@@ -873,9 +760,8 @@ def beta_regression(stock_prices: pd.Series, market_prices: pd.Series) -> float:
         raise ValueError("Beta is not finite.")
     return b
 
-
 # =========================================================
-# 7) MODELS (DCF + Multiples)
+# 7) MODELS (DCF + Multiples) built from time-aligned fundamentals
 # =========================================================
 def dcf_per_share_from_fcff(
     fcff0: float,
@@ -888,21 +774,20 @@ def dcf_per_share_from_fcff(
 ) -> float:
     """
     FCFF-based DCF -> Equity value -> per share.
-    Terminal growth is capped by market long-run CAGR to avoid hard-coded GDP/inflation.
+    Terminal growth capped by market long-run CAGR (data-driven).
     """
     if shares <= 0:
         raise ValueError("shares <= 0")
     if not np.isfinite(fcff0) or fcff0 <= 0:
         raise ValueError("fcff0 must be positive and finite")
-    if not np.isfinite(wacc) or wacc <= 0:
+    if not np.isfinite(wacc) or wacc <= 0 or wacc > WACC_MAX:
         raise ValueError("wacc must be positive and finite")
-
     if not np.isfinite(g):
         raise ValueError("g not finite")
 
     g_term = min(g, market_long_run_g)
     if wacc <= g_term:
-        raise ValueError(f"WACC ({wacc}) <= terminal growth ({g_term})")
+        raise ValueError("WACC <= terminal growth")
 
     pv_sum = 0.0
     last = None
@@ -914,96 +799,77 @@ def dcf_per_share_from_fcff(
     tv = (last * (1.0 + g_term)) / (wacc - g_term)
     pv_tv = tv / ((1.0 + wacc) ** years)
     ev = pv_sum + pv_tv
-
     equity_value = ev - net_debt
     return equity_value / shares
 
+def robust_loss_mape(y: np.ndarray, yhat: np.ndarray) -> float:
+    # robust-ish MAPE: ignore invalid, avoid blow-ups
+    mask = np.isfinite(y) & np.isfinite(yhat) & (y > 0)
+    if mask.sum() == 0:
+        return float("inf")
+    yy = y[mask]
+    yh = yhat[mask]
+    ape = np.abs((yh - yy) / yy)
+    # winsorize APE to reduce outlier domination
+    ape = winsorize(ape, 0.02, 0.98)
+    return float(np.mean(ape) * 100.0)
 
-def backcast_series(current_value: float, g: float, years_ago_array: np.ndarray) -> np.ndarray:
-    if current_value is None or not np.isfinite(current_value):
-        raise ValueError("current_value invalid")
-    return np.array([current_value / ((1.0 + g) ** y) for y in years_ago_array], dtype=float)
+def optimize_weights_dirichlet(
+    y: np.ndarray,
+    X: np.ndarray,
+    avail: np.ndarray,
+    n_samples: int = N_WEIGHT_SAMPLES,
+) -> np.ndarray:
+    """
+    Continuous-ish optimizer: sample many weights from Dirichlet, keep best.
+    Constraints: w>=0, sum=1, and unavailable models forced to 0.
+    X shape: (n_models, n_points)
+    """
+    n_models = X.shape[0]
+    if not np.any(avail):
+        raise ValueError("No models available")
 
+    # Reduce to available subspace for sampling
+    idx = np.where(avail)[0]
+    k = len(idx)
 
-def normalize_weights_simplex(ws: np.ndarray) -> np.ndarray:
-    s = float(np.sum(ws))
-    if s <= 0:
-        raise ValueError("weight sum <= 0")
-    return ws / s
+    # Precompute valid point mask: need finite across chosen models and y>0
+    y = y.astype(float)
+    best_w_full = np.zeros(n_models, dtype=float)
+    best_loss = float("inf")
 
+    # Small deterministic seed for repeatability per request
+    rnd = np.random.default_rng(42)
 
-def solver_best_weights(
-    actual_prices: np.ndarray,
-    model_matrix: np.ndarray,
-    available_mask: np.ndarray,
-    sample_step: int = SOLVER_SAMPLE_STEP,
-    grid_step: float = 0.1,
-) -> dict:
-    if actual_prices.ndim != 1:
-        raise ValueError("actual_prices must be 1D")
-    n_days = actual_prices.shape[0]
-    n_models = model_matrix.shape[0]
+    # Include some corner weights (single-model)
+    corner = []
+    for j in idx:
+        w = np.zeros(n_models, dtype=float)
+        w[j] = 1.0
+        corner.append(w)
+    candidates = corner
 
-    idxs = np.arange(0, n_days, sample_step, dtype=int)
-    y = actual_prices[idxs]
-    if np.any(~np.isfinite(y)) or np.all(y <= 0):
-        raise ValueError("actual prices invalid for solver")
+    # Dirichlet draws
+    alpha = np.ones(k, dtype=float)
+    draws = rnd.dirichlet(alpha, size=n_samples)
+    for d in draws:
+        w = np.zeros(n_models, dtype=float)
+        w[idx] = d
+        candidates.append(w)
 
-    X = model_matrix[:, idxs].copy()
-    for j in range(n_models):
-        if not available_mask[j]:
-            X[j, :] = np.nan
+    # Evaluate
+    for w in candidates:
+        yhat = np.nansum(X.T * w, axis=1)
+        loss = robust_loss_mape(y, yhat)
+        if np.isfinite(loss) and loss < best_loss:
+            best_loss = loss
+            best_w_full = w.copy()
 
-    if not np.any(available_mask):
-        raise ValueError("No models available for solver")
-
-    step = grid_step
-    steps = [i * step for i in range(int(1 / step) + 1)]
-
-    best = {"mape": float("inf"), "weights": None}
-
-    for w0 in steps:
-        for w1 in steps:
-            for w2 in steps:
-                w3 = 1.0 - w0 - w1 - w2
-                if w3 < -1e-9:
-                    continue
-                w = np.array([w0, w1, w2, w3], dtype=float)
-
-                w = w * available_mask.astype(float)
-                if np.sum(w) <= 0:
-                    continue
-                w = normalize_weights_simplex(w)
-
-                pred = np.nansum(X.T * w, axis=1)
-                if np.any(~np.isfinite(pred)):
-                    continue
-
-                denom = np.where(y == 0, np.nan, y)
-                ape = np.abs((pred - y) / denom)
-                mape = float(np.nanmean(ape) * 100.0)
-                if not np.isfinite(mape):
-                    continue
-                if mape < best["mape"]:
-                    best["mape"] = mape
-                    best["weights"] = w.copy()
-
-    if best["weights"] is None:
-        raise ValueError("Solver could not find weights")
-
-    return best
-
-
-def calibration_k(actual_prices: np.ndarray, combined_model: np.ndarray) -> float:
-    a = np.sum(actual_prices[np.isfinite(actual_prices)])
-    m = np.sum(combined_model[np.isfinite(combined_model)])
-    if m <= 0 or not np.isfinite(m):
-        return 1.0
-    k = float(a / m)
-    if not np.isfinite(k) or k <= 0:
-        return 1.0
-    return k
-
+    if best_w_full.sum() <= 0:
+        raise ValueError("Weight search failed")
+    # normalize (should already sum to 1 on available models)
+    best_w_full = best_w_full / best_w_full.sum()
+    return best_w_full
 
 # =========================================================
 # 8) REQUEST MODEL
@@ -1011,9 +877,8 @@ def calibration_k(actual_prices: np.ndarray, combined_model: np.ndarray) -> floa
 class StockRequest(BaseModel):
     ticker: str
 
-
 # =========================================================
-# 9) MAIN ANALYSIS ENDPOINT
+# 9) MAIN ANALYSIS ENDPOINT (time-aligned fundamentals + walk-forward weights)
 # =========================================================
 @app.post("/analyze")
 def analyze_stock(request: StockRequest):
@@ -1030,54 +895,45 @@ def analyze_stock(request: StockRequest):
         if mkt_hist is None or mkt_hist.empty or "Close" not in mkt_hist.columns or mkt_hist["Close"].dropna().empty:
             return JSONResponse({"error": "No valid Close prices for market index (^TASI.SR)."}, status_code=200)
 
-        stock_close = hist["Close"].astype(float).dropna()
-        mkt_close = mkt_hist["Close"].astype(float).dropna()
+        stock_close_raw = hist["Close"].astype(float).dropna()
+        mkt_close_raw = mkt_hist["Close"].astype(float).dropna()
 
-        aligned = pd.DataFrame({"stock": stock_close, "mkt": mkt_close}).dropna()
-        if len(aligned) < 200:
+        # Align by date intersection
+        aligned_px = pd.DataFrame({"stock": stock_close_raw, "mkt": mkt_close_raw}).dropna()
+        if len(aligned_px) < 300:
             return JSONResponse({"error": "Not enough overlapping price history between stock and TASI."}, status_code=200)
 
-        stock_close = aligned["stock"]
-        mkt_close = aligned["mkt"]
+        stock_close = aligned_px["stock"]
+        mkt_close = aligned_px["mkt"]
+        dates = stock_close.index
 
         current_price = float(stock_close.iloc[-1])
         prices_list = stock_close.tolist()
-        dates_ms = (stock_close.index.astype(np.int64) // 10**6).tolist()
-        n_days = len(prices_list)
-
-        if n_days < 200:
-            return JSONResponse({"error": "Not enough historical price points."}, status_code=200)
+        dates_ms = (dates.astype(np.int64) // 10**6).tolist()
+        n_days = len(stock_close)
 
         # ---------- Statements ----------
         pack = fetcher.fetch_statements_yahoo(ticker)
         info = pack.get("info") or {}
-        fin = pack.get("financials")
-        bs = pack.get("balance_sheet")
-        cf = pack.get("cashflow")
+
+        fin_q = pack.get("financials_quarterly")
+        bs_q = pack.get("balance_sheet_quarterly")
+        cf_q = pack.get("cashflow_quarterly")
+
+        fin_a = pack.get("financials_annual")
+        bs_a = pack.get("balance_sheet_annual")
+        cf_a = pack.get("cashflow_annual")
 
         company_name = info.get("longName") or f"Saudi Stock {request.ticker}"
         sector = (info.get("sector") or "Unknown").title()
 
-        # Shares + market cap
-        shares = info.get("sharesOutstanding")
-        mcap = info.get("marketCap")
-        if mcap is None and shares is not None:
-            try:
-                mcap = float(shares) * current_price
-            except Exception:
-                mcap = None
-
-        if mcap is None:
-            return JSONResponse({"error": "Missing market cap (or sharesOutstanding). Cannot compute equity value E."}, status_code=200)
-
-        try:
-            shares_f = float(shares)
-            if shares_f <= 0:
-                raise ValueError("sharesOutstanding <= 0")
-        except Exception:
-            return JSONResponse({"error": "Invalid sharesOutstanding from statements source (Yahoo)."}, status_code=200)
-
-        E = float(mcap)
+        # Shares & market cap
+        shares_now = _to_float(info.get("sharesOutstanding"))
+        mcap_now = _to_float(info.get("marketCap"))
+        if mcap_now is None and shares_now is not None:
+            mcap_now = shares_now * current_price
+        if mcap_now is None or shares_now is None or shares_now <= 0:
+            return JSONResponse({"error": "Missing/invalid sharesOutstanding or marketCap from statements source."}, status_code=200)
 
         # ---------- Risk-free (Excel) ----------
         try:
@@ -1108,165 +964,201 @@ def analyze_stock(request: StockRequest):
         # ---------- Cost of equity ----------
         Re = rf + beta * erp
 
-        # ---------- Pull required statement columns ----------
-        fin_col = most_recent_col(fin)
-        bs_col = most_recent_col(bs)
-        cf_col = most_recent_col(cf)
-        bs_col_prev = second_most_recent_col(bs)
-
+        # ---------- Build time-aligned fundamentals (prefer quarterly -> TTM) ----------
         method_flags = {
             "rf": rf_method,
             "beta": beta_method,
             "wacc": None,
             "growth": None,
             "fcff": None,
+            "fundamentals": "quarterly_ttm" if (isinstance(fin_q, pd.DataFrame) and not fin_q.empty) else "annual_fallback",
             "prices_source_stock": source_stock,
             "prices_source_market": source_mkt,
+            "walk_forward": f"train={TRAIN_WINDOW_DAYS}d,test={TEST_WINDOW_DAYS}d",
         }
 
-        # ---------- Debt / Cash ----------
-        D = 0.0
-        cash = 0.0
+        # ---- Core fundamental series candidates ----
+        # Net income (quarterly)
+        ni_q = _series_from_row(fin_q, ["Net Income", "NetIncome"], contains=["net", "income"]) if isinstance(fin_q, pd.DataFrame) else None
+        # Total stockholders equity (quarterly)
+        eq_q = _series_from_row(bs_q, ["Total Stockholder Equity", "Total Stockholders Equity", "Total Equity Gross Minority Interest"], contains=["total", "equity"]) if isinstance(bs_q, pd.DataFrame) else None
+        # Cash from operations (quarterly)
+        cfo_q = _series_from_row(cf_q, ["Total Cash From Operating Activities", "Operating Cash Flow"], contains=["operating", "cash"]) if isinstance(cf_q, pd.DataFrame) else None
+        # CapEx (quarterly, often negative)
+        capex_q = _series_from_row(cf_q, ["Capital Expenditures", "Capital Expenditure"], contains=["capital", "expend"]) if isinstance(cf_q, pd.DataFrame) else None
+        # Depreciation (quarterly)
+        da_q = _series_from_row(cf_q, ["Depreciation", "Depreciation And Amortization"], contains=["depreciation"]) if isinstance(cf_q, pd.DataFrame) else None
+        # Operating income / EBIT (quarterly)
+        ebit_q = _series_from_row(fin_q, ["Operating Income", "OperatingIncome", "EBIT", "Ebit"], contains=["operating", "income"]) if isinstance(fin_q, pd.DataFrame) else None
 
-        st_debt = safe_get_line(bs, ["Short Long Term Debt", "Short Term Debt", "Current Debt", "ShortTermDebt"], bs_col)
-        lt_debt = safe_get_line(bs, ["Long Term Debt", "LongTermDebt", "Long Term Debt And Capital Lease Obligation"], bs_col)
-        if st_debt is None:
-            st_debt = safe_get_line_contains(bs, ["short", "debt"], bs_col)
-        if lt_debt is None:
-            lt_debt = safe_get_line_contains(bs, ["long", "debt"], bs_col)
-        st_debt = float(st_debt) if st_debt is not None and np.isfinite(st_debt) else 0.0
-        lt_debt = float(lt_debt) if lt_debt is not None and np.isfinite(lt_debt) else 0.0
-        D = st_debt + lt_debt
+        # Debt (quarterly)
+        st_debt_q = _series_from_row(bs_q, ["Short Long Term Debt", "Short Term Debt", "Current Debt"], contains=["short", "debt"]) if isinstance(bs_q, pd.DataFrame) else None
+        lt_debt_q = _series_from_row(bs_q, ["Long Term Debt", "LongTermDebt"], contains=["long", "debt"]) if isinstance(bs_q, pd.DataFrame) else None
+        cash_q = _series_from_row(bs_q, ["Cash", "Cash And Cash Equivalents", "CashAndCashEquivalents"], contains=["cash"]) if isinstance(bs_q, pd.DataFrame) else None
 
-        cash_val = safe_get_line(bs, ["Cash", "Cash And Cash Equivalents", "CashAndCashEquivalents",
-                                      "Cash And Cash Equivalents And Short Term Investments"], bs_col)
-        if cash_val is None:
-            cash_val = safe_get_line_contains(bs, ["cash"], bs_col)
-        cash = float(cash_val) if cash_val is not None and np.isfinite(cash_val) else 0.0
+        # Shares (best-effort from statements; if unavailable we keep constant sharesOutstanding)
+        shares_q = _series_from_row(bs_q, ["Ordinary Shares Number", "Share Issued", "Common Stock Shares Outstanding"],
+                                    contains=["shares"]) if isinstance(bs_q, pd.DataFrame) else None
 
-        net_debt = D - cash
+        # If quarterly missing, fallback to annual (still time-aligned but lower resolution)
+        if ni_q is None and isinstance(fin_a, pd.DataFrame) and not fin_a.empty:
+            ni_q = _series_from_row(fin_a, ["Net Income", "NetIncome"], contains=["net", "income"])
+        if eq_q is None and isinstance(bs_a, pd.DataFrame) and not bs_a.empty:
+            eq_q = _series_from_row(bs_a, ["Total Stockholder Equity", "Total Stockholders Equity", "Total Equity Gross Minority Interest"], contains=["total", "equity"])
+        if cfo_q is None and isinstance(cf_a, pd.DataFrame) and not cf_a.empty:
+            cfo_q = _series_from_row(cf_a, ["Total Cash From Operating Activities", "Operating Cash Flow"], contains=["operating", "cash"])
+        if capex_q is None and isinstance(cf_a, pd.DataFrame) and not cf_a.empty:
+            capex_q = _series_from_row(cf_a, ["Capital Expenditures", "Capital Expenditure"], contains=["capital", "expend"])
+        if da_q is None and isinstance(cf_a, pd.DataFrame) and not cf_a.empty:
+            da_q = _series_from_row(cf_a, ["Depreciation", "Depreciation And Amortization"], contains=["depreciation"])
+        if ebit_q is None and isinstance(fin_a, pd.DataFrame) and not fin_a.empty:
+            ebit_q = _series_from_row(fin_a, ["Operating Income", "OperatingIncome", "EBIT", "Ebit"], contains=["operating", "income"])
+        if st_debt_q is None and isinstance(bs_a, pd.DataFrame) and not bs_a.empty:
+            st_debt_q = _series_from_row(bs_a, ["Short Long Term Debt", "Short Term Debt", "Current Debt"], contains=["short", "debt"])
+        if lt_debt_q is None and isinstance(bs_a, pd.DataFrame) and not bs_a.empty:
+            lt_debt_q = _series_from_row(bs_a, ["Long Term Debt", "LongTermDebt"], contains=["long", "debt"])
+        if cash_q is None and isinstance(bs_a, pd.DataFrame) and not bs_a.empty:
+            cash_q = _series_from_row(bs_a, ["Cash", "Cash And Cash Equivalents", "CashAndCashEquivalents"], contains=["cash"])
 
-        # ---------- Taxes (effective) ----------
-        pretax = safe_get_line(fin, ["Pretax Income", "Income Before Tax", "IncomeBeforeTax"], fin_col)
-        if pretax is None:
-            pretax = safe_get_line_contains(fin, ["before", "tax"], fin_col)
-        tax_exp = safe_get_line(fin, ["Tax Provision", "Income Tax Expense", "IncomeTaxExpense"], fin_col)
-        if tax_exp is None:
-            tax_exp = safe_get_line_contains(fin, ["tax"], fin_col)
-
+        # ---- Effective tax rate (best-effort from annual, else clamp) ----
         T = 0.0
-        if pretax is not None and tax_exp is not None and np.isfinite(pretax) and pretax > 0 and np.isfinite(tax_exp):
-            T = float(tax_exp) / float(pretax)
-            T = max(0.0, min(T, 0.35))
+        try:
+            pretax_a = _series_from_row(fin_a, ["Pretax Income", "Income Before Tax", "IncomeBeforeTax"], contains=["before", "tax"]) if isinstance(fin_a, pd.DataFrame) else None
+            tax_a = _series_from_row(fin_a, ["Tax Provision", "Income Tax Expense", "IncomeTaxExpense"], contains=["tax"]) if isinstance(fin_a, pd.DataFrame) else None
+            if pretax_a is not None and tax_a is not None and pretax_a.dropna().size > 0 and tax_a.dropna().size > 0:
+                # use most recent year
+                px = float(pretax_a.dropna().iloc[-1])
+                tx = float(tax_a.dropna().iloc[-1])
+                if np.isfinite(px) and px > 0 and np.isfinite(tx):
+                    T = max(0.0, min(tx / px, 0.35))
+        except Exception:
+            pass
 
-        # ---------- Cost of debt (best-effort from interest / avg debt) ----------
-        Rd = None
-        if D > 0:
-            interest_exp = safe_get_line(fin, ["Interest Expense", "InterestExpense", "Interest Expense Non Operating"], fin_col)
-            if interest_exp is None:
-                interest_exp = safe_get_line_contains(fin, ["interest", "expense"], fin_col)
+        # ---- Time-varying net debt (report-based, then forward-fill daily) ----
+        # If debt/cash missing, treat as 0 but flag reliability
+        st_debt_q = st_debt_q if st_debt_q is not None else pd.Series(dtype=float)
+        lt_debt_q = lt_debt_q if lt_debt_q is not None else pd.Series(dtype=float)
+        cash_q = cash_q if cash_q is not None else pd.Series(dtype=float)
 
-            interest_paid_cf = safe_get_line(cf, ["Interest Paid", "InterestPaid", "Cash Interest Paid", "CashInterestPaid"], cf_col)
-            if interest_paid_cf is None:
-                interest_paid_cf = safe_get_line_contains(cf, ["interest", "paid"], cf_col)
+        debt_q = (st_debt_q.fillna(0.0) + lt_debt_q.fillna(0.0)).sort_index()
+        cash_q = cash_q.fillna(0.0).sort_index()
+        net_debt_q = (debt_q - cash_q).sort_index()
 
-            avg_D = None
-            if bs_col_prev is not None:
-                st_prev = safe_get_line(bs, ["Short Long Term Debt", "Short Term Debt", "Current Debt", "ShortTermDebt"], bs_col_prev)
-                lt_prev = safe_get_line(bs, ["Long Term Debt", "LongTermDebt", "Long Term Debt And Capital Lease Obligation"], bs_col_prev)
-                st_prev = float(st_prev) if st_prev is not None and np.isfinite(st_prev) else 0.0
-                lt_prev = float(lt_prev) if lt_prev is not None and np.isfinite(lt_prev) else 0.0
-                D_prev = st_prev + lt_prev
-                avg_D = (D + D_prev) / 2.0 if (D + D_prev) > 0 else None
+        net_debt_daily = last_value_on_or_before(net_debt_q, dates)
 
-            if avg_D is not None and avg_D > 0:
-                if interest_exp is not None and np.isfinite(interest_exp):
-                    Rd = float(interest_exp) / float(avg_D)
-                    method_flags["wacc"] = "interest_expense_over_avg_debt"
-                elif interest_paid_cf is not None and np.isfinite(interest_paid_cf):
-                    Rd = abs(float(interest_paid_cf)) / float(avg_D)
-                    method_flags["wacc"] = "interest_paid_over_avg_debt"
-            if Rd is not None and (not np.isfinite(Rd) or Rd <= 0 or Rd > 0.50):
-                Rd = None
-
-        # ---------- WACC ----------
-        if D > 0 and Rd is not None:
-            total_cap = D + E
-            wE = E / total_cap
-            wD = D / total_cap
-            WACC = wE * Re + wD * Rd * (1.0 - T)
-            method_flags["wacc"] = method_flags["wacc"] or "wacc_full"
+        # ---- Shares time series (best-effort). Fallback: constant shares_now ----
+        if shares_q is not None and shares_q.dropna().size >= 2:
+            shares_daily = last_value_on_or_before(shares_q, dates)
+            # sanity: if shares look insane, revert to constant
+            if not np.isfinite(shares_daily.dropna().median()) or shares_daily.dropna().median() <= 0:
+                shares_daily = pd.Series(index=dates, data=float(shares_now))
+                method_flags["shares"] = "constant_info"
+            else:
+                method_flags["shares"] = "report_aligned_best_effort"
         else:
-            WACC = Re
-            method_flags["wacc"] = "equity_only_Re"
+            shares_daily = pd.Series(index=dates, data=float(shares_now))
+            method_flags["shares"] = "constant_info"
 
-        # ---------- Growth (best-effort, data-driven) ----------
+        # ---- EPS TTM (from net income TTM / shares) ----
+        eps_ttm_daily = None
+        if ni_q is not None and ni_q.dropna().size >= 4:
+            ni_ttm = ttm_from_quarters(ni_q)
+            ni_ttm_daily = last_value_on_or_before(ni_ttm, dates)
+            eps_ttm_daily = ni_ttm_daily / shares_daily
+        else:
+            eps_ttm_daily = pd.Series(index=dates, dtype=float)
+
+        # ---- BVPS (equity / shares), forward-fill ----
+        if eq_q is not None and eq_q.dropna().size >= 2:
+            eq_daily = last_value_on_or_before(eq_q, dates)
+            bvps_daily = eq_daily / shares_daily
+        else:
+            bvps_daily = pd.Series(index=dates, dtype=float)
+
+        # ---- EBITDA TTM (prefer explicit EBITDA; else EBIT + D&A) ----
+        ebitda_q = _series_from_row(fin_q, ["Ebitda", "EBITDA"], contains=["ebitda"]) if isinstance(fin_q, pd.DataFrame) else None
+        if ebitda_q is None and isinstance(fin_a, pd.DataFrame) and not fin_a.empty:
+            ebitda_q = _series_from_row(fin_a, ["Ebitda", "EBITDA"], contains=["ebitda"])
+
+        if ebitda_q is not None and ebitda_q.dropna().size >= 4:
+            ebitda_ttm = ttm_from_quarters(ebitda_q)
+            ebitda_ttm_daily = last_value_on_or_before(ebitda_ttm, dates)
+            method_flags["ebitda"] = "reported_ttm"
+        else:
+            # fallback: (EBIT + D&A), both need to exist at least quarterly/annual (TTM where possible)
+            ebitda_ttm_daily = pd.Series(index=dates, dtype=float)
+            if ebit_q is not None and da_q is not None and ebit_q.dropna().size >= 2 and da_q.dropna().size >= 2:
+                # If quarterly and enough points -> make TTM. If annual -> rolling(4) will require 4 years, so we’ll
+                # fall back to last known annual (no TTM) by forward-filling original if too sparse.
+                if ebit_q.dropna().size >= 4 and da_q.dropna().size >= 4:
+                    ebit_ttm = ttm_from_quarters(ebit_q)
+                    da_ttm = ttm_from_quarters(da_q)
+                    ebitda_ttm_daily = last_value_on_or_before(ebit_ttm + da_ttm, dates)
+                    method_flags["ebitda"] = "ebit_plus_da_ttm"
+                else:
+                    # annual-ish: use latest known (not TTM)
+                    ebit_daily = last_value_on_or_before(ebit_q, dates)
+                    da_daily = last_value_on_or_before(da_q, dates)
+                    ebitda_ttm_daily = ebit_daily + da_daily
+                    method_flags["ebitda"] = "ebit_plus_da_latest"
+            else:
+                method_flags["ebitda"] = "unavailable"
+
+        # ---- FCFF (prefer CFO - CapEx, report-aligned; then forward-fill) ----
+        fcff_q = pd.Series(dtype=float)
+        if cfo_q is not None and capex_q is not None and cfo_q.dropna().size >= 2 and capex_q.dropna().size >= 2:
+            # CapEx can be negative (cash outflow). Normalize to positive outflow.
+            capex_out = capex_q.copy()
+            capex_out = capex_out.apply(lambda x: -x if pd.notna(x) and x < 0 else x)
+            fcff_q = (cfo_q - capex_out).sort_index()
+            method_flags["fcff"] = "cfo_minus_capex_report_aligned"
+        else:
+            method_flags["fcff"] = "unavailable"
+
+        fcff_daily = last_value_on_or_before(fcff_q, dates) if fcff_q is not None and not fcff_q.empty else pd.Series(index=dates, dtype=float)
+
+        # ---- Growth (use report-aligned TTM fundamentals; fallback to price CAGR) ----
         g = None
 
-        EBIT = safe_get_line(fin, [
-            "Ebit", "EBIT",
-            "Operating Income", "OperatingIncome",
-            "Total Operating Income As Reported", "TotalOperatingIncomeAsReported",
-            "Operating Profit", "OperatingProfit",
-        ], fin_col)
-        if EBIT is None:
-            EBIT = safe_get_line_contains(fin, ["operating", "income"], fin_col)
+        # Prefer NI TTM CAGR over last ~3 years (report-level), because it tracks business performance more than price.
+        try:
+            if ni_q is not None and ni_q.dropna().size >= 8:
+                ni_ttm = ttm_from_quarters(ni_q).dropna().sort_index()
+                # need at least 5 TTM points for a meaningful CAGR window
+                if ni_ttm.size >= 5:
+                    # use last 3 years if available (~12 quarters => ~9 TTM points)
+                    ni_tail = ni_ttm.tail(9) if ni_ttm.size >= 9 else ni_ttm
+                    start = float(ni_tail.iloc[0])
+                    end = float(ni_tail.iloc[-1])
+                    # approximate years from index delta
+                    years = max((ni_tail.index[-1] - ni_tail.index[0]).days / 365.25, 0.5)
+                    if np.isfinite(start) and np.isfinite(end) and start > 0 and end > 0 and years > 0:
+                        g_try = (end / start) ** (1.0 / years) - 1.0
+                        if np.isfinite(g_try):
+                            g = float(max(GROWTH_MIN, min(g_try, GROWTH_MAX)))
+                            method_flags["growth"] = "net_income_ttm_cagr"
+        except Exception:
+            pass
 
-        DA = safe_get_line(cf, ["Depreciation", "Depreciation And Amortization", "Depreciation & Amortization"], cf_col)
-        if DA is None:
-            DA = safe_get_line_contains(cf, ["depreciation"], cf_col)
+        # Fallback: FCFF trend (report-level), if NI not usable
+        if g is None:
+            try:
+                if fcff_q is not None and not fcff_q.empty and fcff_q.dropna().size >= 6:
+                    # Use report-level FCFF, not daily
+                    f = fcff_q.dropna().sort_index()
+                    f_tail = f.tail(12) if f.size >= 12 else f
+                    start = float(f_tail.iloc[0])
+                    end = float(f_tail.iloc[-1])
+                    years = max((f_tail.index[-1] - f_tail.index[0]).days / 365.25, 0.5)
+                    if np.isfinite(start) and np.isfinite(end) and start > 0 and end > 0 and years > 0:
+                        g_try = (end / start) ** (1.0 / years) - 1.0
+                        if np.isfinite(g_try):
+                            g = float(max(GROWTH_MIN, min(g_try, GROWTH_MAX)))
+                            method_flags["growth"] = "fcff_report_cagr"
+            except Exception:
+                pass
 
-        CapEx = safe_get_line(cf, ["Capital Expenditures", "Capital Expenditure"], cf_col)
-        if CapEx is None:
-            CapEx = safe_get_line_contains(cf, ["capital", "expend"], cf_col)
-
-        def net_working_capital(bs_df: pd.DataFrame, col):
-            tca = safe_get_line(bs_df, ["Total Current Assets"], col)
-            tcl = safe_get_line(bs_df, ["Total Current Liabilities"], col)
-            if tca is None or tcl is None:
-                return None
-            cash_local = safe_get_line(bs_df, ["Cash", "Cash And Cash Equivalents", "CashAndCashEquivalents",
-                                              "Cash And Cash Equivalents And Short Term Investments"], col) or 0.0
-            st_debt_local = safe_get_line(bs_df, ["Short Long Term Debt", "Short Term Debt", "Current Debt", "ShortTermDebt"], col) or 0.0
-            return (float(tca) - float(cash_local)) - (float(tcl) - float(st_debt_local))
-
-        dWC = None
-        if bs_col_prev is not None:
-            NWC_now = net_working_capital(bs, bs_col)
-            NWC_prev = net_working_capital(bs, bs_col_prev)
-            if NWC_now is not None and NWC_prev is not None and np.isfinite(NWC_now) and np.isfinite(NWC_prev):
-                dWC = float(NWC_now - NWC_prev)
-
-        fcff0 = None
-        fcff_method = None
-
-        if EBIT is not None and np.isfinite(EBIT) and DA is not None and np.isfinite(DA) and CapEx is not None and np.isfinite(CapEx) and dWC is not None and np.isfinite(dWC):
-            NOPAT = float(EBIT) * (1.0 - T)
-            capex_out = -float(CapEx) if float(CapEx) < 0 else float(CapEx)
-            fcff0 = NOPAT + float(DA) - capex_out - float(dWC)
-            if np.isfinite(fcff0) and fcff0 > 0:
-                fcff_method = "ebit_da_capex_dwc"
-        if fcff0 is None:
-            CFO = safe_get_line(cf, ["Total Cash From Operating Activities", "Operating Cash Flow", "OperatingCashFlow"], cf_col)
-            if CFO is None:
-                CFO = safe_get_line_contains(cf, ["operating", "cash"], cf_col)
-            if CFO is not None and np.isfinite(CFO) and CapEx is not None and np.isfinite(CapEx):
-                capex_out = -float(CapEx) if float(CapEx) < 0 else float(CapEx)
-                fcff0 = float(CFO) - capex_out
-                if np.isfinite(fcff0) and fcff0 > 0:
-                    fcff_method = "cfo_minus_capex"
-
-        if fcff0 is not None and fcff0 > 0 and EBIT is not None and np.isfinite(EBIT):
-            NOPAT = float(EBIT) * (1.0 - T)
-            invested_capital = (E + D - cash)
-            if np.isfinite(invested_capital) and invested_capital > 0 and np.isfinite(NOPAT) and NOPAT > 0 and DA is not None and CapEx is not None and dWC is not None:
-                ROIC = float(NOPAT) / float(invested_capital)
-                capex_out = -float(CapEx) if float(CapEx) < 0 else float(CapEx)
-                reinvestment_rate = (capex_out - float(DA) + float(dWC)) / float(NOPAT)
-                g_try = float(ROIC) * float(reinvestment_rate)
-                if np.isfinite(g_try) and -0.20 <= g_try <= 0.40:
-                    g = g_try
-                    method_flags["growth"] = "roic_x_reinvestment"
+        # Final fallback: price CAGR (data-driven, but least “fundamental”)
         if g is None:
             try:
                 years = (len(stock_close) - 1) / TRADING_DAYS
@@ -1275,188 +1167,215 @@ def analyze_stock(request: StockRequest):
                 if p0 > 0 and p1 > 0 and years > 0:
                     g_try = (p1 / p0) ** (1.0 / years) - 1.0
                     if np.isfinite(g_try):
-                        g_try = max(-0.20, min(g_try, 0.40))
-                        g = g_try
+                        g = float(max(GROWTH_MIN, min(g_try, GROWTH_MAX)))
                         method_flags["growth"] = "price_cagr"
             except Exception:
                 pass
+
         if g is None:
-            return JSONResponse({"error": "Could not estimate growth from available data."}, status_code=200)
+            return JSONResponse({"error": "Could not estimate growth from available data (TTM/FCFF/price)."}, status_code=200)
 
-        method_flags["fcff"] = fcff_method or "unavailable"
-
-        # Market long-run growth cap (data-driven)
+        # ---- Market long-run growth cap (data-driven) ----
         try:
             g_mkt = annualized_geo_mean_return(mkt_tail)
         except Exception:
             g_mkt = rm_exp if np.isfinite(rm_exp) else 0.03
 
-        # ---------- NEW: derive multiples inputs robustly ----------
-        derived = derive_eps_book_ebitda(
-            info=info,
-            fin=fin,
-            bs=bs,
-            cf=cf,
-            fin_col=fin_col,
-            bs_col=bs_col,
-            cf_col=cf_col,
-            shares_f=float(shares_f),
-        )
-        eps_now = derived["eps_now"]
-        book_now = derived["book_now"]
-        EBITDA = derived["ebitda_now"]
-        mult_sources = derived["sources"]
+        # ---- Cost of debt (best-effort from annual interest / avg debt) ----
+        Rd = None
+        try:
+            interest_a = _series_from_row(fin_a, ["Interest Expense", "InterestExpense", "Interest Expense Non Operating"], contains=["interest", "expense"]) if isinstance(fin_a, pd.DataFrame) else None
+            if interest_a is not None and interest_a.dropna().size >= 1 and debt_q is not None and debt_q.dropna().size >= 1:
+                # debt_q may be quarterly; use last 2 debt observations to form avg debt
+                d = debt_q.dropna().sort_index()
+                d_tail = d.tail(2) if d.size >= 2 else d.tail(1)
+                avg_debt = float(d_tail.mean()) if d_tail.size > 0 else None
+                i_last = float(interest_a.dropna().iloc[-1])
+                if avg_debt is not None and avg_debt > 0 and np.isfinite(i_last):
+                    Rd_try = abs(i_last) / avg_debt
+                    if np.isfinite(Rd_try) and 0 < Rd_try <= WACC_MAX:
+                        Rd = float(Rd_try)
+                        method_flags["wacc"] = "interest_over_avg_debt"
+        except Exception:
+            pass
 
-        # Current observed multiples (only if inputs exist and meaningful)
-        pe_ratio_now = None
-        if eps_now is not None and np.isfinite(eps_now) and eps_now != 0:
-            pe_ratio_now = current_price / eps_now
+        # ---- Time-varying capital weights (daily): E=price*shares, D=debt report-aligned ----
+        market_cap_daily = stock_close * shares_daily
+        debt_daily = last_value_on_or_before(debt_q, dates) if debt_q is not None and not debt_q.empty else pd.Series(index=dates, data=0.0)
 
-        pb_ratio_now = None
-        if book_now is not None and np.isfinite(book_now) and book_now != 0:
-            pb_ratio_now = current_price / book_now
+        # ---- WACC (prefer full; else equity-only) ----
+        if Rd is not None:
+            total_cap_daily = (market_cap_daily + debt_daily).replace([np.inf, -np.inf], np.nan)
+            wE_daily = (market_cap_daily / total_cap_daily).replace([np.inf, -np.inf], np.nan).fillna(1.0)
+            wD_daily = (debt_daily / total_cap_daily).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+            wacc_daily = (wE_daily * Re + wD_daily * Rd * (1.0 - T)).clip(lower=0.0)
+            method_flags["wacc"] = method_flags.get("wacc") or "wacc_full_timevarying_weights"
+        else:
+            wacc_daily = pd.Series(index=dates, data=float(Re))
+            method_flags["wacc"] = "equity_only_Re"
 
-        ev_ebitda_now = None
-        if EBITDA is not None and np.isfinite(EBITDA) and EBITDA != 0:
-            EV_now = E + D - cash
-            ev_ebitda_now = EV_now / EBITDA
+        # For DCF we use the latest WACC (keeps DCF stable, avoids backtest “wiggle” from weights noise)
+        WACC = float(wacc_daily.dropna().iloc[-1]) if wacc_daily.dropna().size else float(Re)
+        if (not np.isfinite(WACC)) or WACC <= 0 or WACC > WACC_MAX:
+            return JSONResponse({"error": f"WACC invalid after estimation: {WACC}"}, status_code=200)
 
-        # ---------- Build time series of model prices over 5y for solver ----------
-        years_ago_array = np.linspace(5.0, 0.0, n_days)
+        # =========================================================
+        # Build MODEL SERIES (daily) using time-aligned fundamentals
+        # =========================================================
+        price_arr = np.array(prices_list, dtype=float)
 
-        current_models = {
-            "rf": rf,
-            "market_return": rm_exp,
-            "erp": erp,
-            "beta": beta,
-            "cost_of_equity": Re,
-            "cost_of_debt": Rd,
-            "tax_rate": T,
-            "wacc": WACC,
-            "growth": g,
-            "method_flags": method_flags,
-            "dcf": None,
-            "pe": None,
-            "pb": None,
-            "ev_ebitda": None,
-        }
+        # --- Observed daily ratios (for target medians), with gating ---
+        eps_arr = eps_ttm_daily.astype(float).values
+        bvps_arr = bvps_daily.astype(float).values
+        ebitda_arr = ebitda_ttm_daily.astype(float).values
+        shares_arr = shares_daily.astype(float).values
+        net_debt_arr = net_debt_daily.astype(float).values
 
-        # DCF series
+        # Observed P/E history (only where EPS>0)
+        pe_obs = np.full(n_days, np.nan, dtype=float)
+        pe_mask = np.isfinite(eps_arr) & (eps_arr > 0) & np.isfinite(price_arr) & (price_arr > 0)
+        pe_obs[pe_mask] = price_arr[pe_mask] / eps_arr[pe_mask]
+
+        # Observed P/B history (only where BVPS>0)
+        pb_obs = np.full(n_days, np.nan, dtype=float)
+        pb_mask = np.isfinite(bvps_arr) & (bvps_arr > 0) & np.isfinite(price_arr) & (price_arr > 0)
+        pb_obs[pb_mask] = price_arr[pb_mask] / bvps_arr[pb_mask]
+
+        # Observed EV/EBITDA history (only where EBITDA>0)
+        ev_ebitda_obs = np.full(n_days, np.nan, dtype=float)
+        ev_mask = np.isfinite(ebitda_arr) & (ebitda_arr > 0) & np.isfinite(price_arr) & (price_arr > 0) & np.isfinite(shares_arr)
+        if ev_mask.any():
+            ev_hist = price_arr * shares_arr + net_debt_arr
+            ev_ebitda_obs[ev_mask] = ev_hist[ev_mask] / ebitda_arr[ev_mask]
+
+        # --- Define train/test split for walk-forward tuning ---
+        # We tune on TRAIN window ending right before TEST window.
+        if n_days < (TRAIN_WINDOW_DAYS + TEST_WINDOW_DAYS + 50):
+            # not enough history: use last ~70% as train, last ~30% as test (still walk-forward-ish)
+            test_start = int(n_days * 0.70)
+            train_start = 0
+            method_flags["walk_forward"] = f"adaptive_train=0:{test_start},test={test_start}:{n_days}"
+        else:
+            test_start = n_days - TEST_WINDOW_DAYS
+            train_start = max(0, test_start - TRAIN_WINDOW_DAYS)
+
+        train_idx = np.arange(train_start, test_start, dtype=int)
+        test_idx = np.arange(test_start, n_days, dtype=int)
+
+        # sample train points (weekly-ish)
+        train_sample = train_idx[::SOLVER_SAMPLE_STEP] if train_idx.size else np.array([], dtype=int)
+
+        if train_sample.size < 50:
+            return JSONResponse({"error": "Not enough training points after walk-forward split."}, status_code=200)
+
+        # --- Targets: medians computed on TRAIN window only (reduces look-ahead) ---
+        def robust_median(x: np.ndarray) -> Optional[float]:
+            z = x[np.isfinite(x)]
+            z = z[(z > 0)]
+            if z.size < 60:
+                return None
+            z = winsorize(z, 0.05, 0.95)
+            return float(np.nanmedian(z)) if np.isfinite(np.nanmedian(z)) else None
+
+        target_pe = robust_median(pe_obs[train_idx])
+        target_pb = robust_median(pb_obs[train_idx])
+        target_ev_ebitda = robust_median(ev_ebitda_obs[train_idx])
+
+        # --- Model series (daily) ---
         stream_dcf = np.full(n_days, np.nan, dtype=float)
-        if fcff0 is not None and np.isfinite(fcff0) and fcff0 > 0 and np.isfinite(WACC) and WACC > 0:
-            try:
-                fcff_series = backcast_series(float(fcff0), float(g), years_ago_array)
-                for i in range(n_days):
+        stream_pe = np.full(n_days, np.nan, dtype=float)
+        stream_pb = np.full(n_days, np.nan, dtype=float)
+        stream_ev_ebitda = np.full(n_days, np.nan, dtype=float)
+
+        # DCF per day using report-aligned FCFF (forward-filled daily)
+        fcff_arr = fcff_daily.astype(float).values
+        # FCFF can be negative; DCF requires positive base. We'll only compute where fcff>0.
+        dcf_mask = np.isfinite(fcff_arr) & (fcff_arr > 0) & np.isfinite(shares_arr) & (shares_arr > 0) & np.isfinite(net_debt_arr)
+        if dcf_mask.any():
+            for i in np.where(dcf_mask)[0]:
+                try:
                     stream_dcf[i] = dcf_per_share_from_fcff(
-                        fcff0=float(fcff_series[i]),
+                        fcff0=float(fcff_arr[i]),
                         wacc=float(WACC),
                         g=float(g),
-                        shares=float(shares_f),
-                        net_debt=float(net_debt),
+                        shares=float(shares_arr[i]),
+                        net_debt=float(net_debt_arr[i]),
                         market_long_run_g=float(g_mkt),
                         years=FORECAST_YEARS,
                     )
-                current_models["dcf"] = float(stream_dcf[-1]) if np.isfinite(stream_dcf[-1]) else None
-            except Exception:
-                pass
+                except Exception:
+                    continue
 
-        # PE series (requires eps_now; we backcast EPS with g)
-        stream_pe = np.full(n_days, np.nan, dtype=float)
-        target_pe = None
-        if eps_now is not None and np.isfinite(eps_now) and eps_now > 0:
-            try:
-                eps_series = backcast_series(float(eps_now), float(g), years_ago_array)
-                pe_hist = np.array(prices_list, dtype=float) / np.where(eps_series == 0, np.nan, eps_series)
-                pe_hist = pe_hist[np.isfinite(pe_hist) & (pe_hist > 0)]
-                if len(pe_hist) >= 60:
-                    target_pe = float(np.nanmedian(pe_hist))
-                if target_pe is not None and np.isfinite(target_pe) and target_pe > 0:
-                    stream_pe = eps_series * target_pe
-                    current_models["pe"] = float(stream_pe[-1]) if np.isfinite(stream_pe[-1]) else None
-            except Exception:
-                pass
+        # P/E model (TTM EPS * target multiple)
+        if target_pe is not None:
+            pe_model_mask = np.isfinite(eps_arr) & (eps_arr > 0)
+            stream_pe[pe_model_mask] = eps_arr[pe_model_mask] * float(target_pe)
 
-        # PB series (requires book_now; backcast BVPS with g)
-        stream_pb = np.full(n_days, np.nan, dtype=float)
-        target_pb = None
-        if book_now is not None and np.isfinite(book_now) and book_now > 0:
-            try:
-                book_series = backcast_series(float(book_now), float(g), years_ago_array)
-                pb_hist = np.array(prices_list, dtype=float) / np.where(book_series == 0, np.nan, book_series)
-                pb_hist = pb_hist[np.isfinite(pb_hist) & (pb_hist > 0)]
-                if len(pb_hist) >= 60:
-                    target_pb = float(np.nanmedian(pb_hist))
-                if target_pb is not None and np.isfinite(target_pb) and target_pb > 0:
-                    stream_pb = book_series * target_pb
-                    current_models["pb"] = float(stream_pb[-1]) if np.isfinite(stream_pb[-1]) else None
-            except Exception:
-                pass
+        # P/B model (BVPS * target multiple)
+        if target_pb is not None:
+            pb_model_mask = np.isfinite(bvps_arr) & (bvps_arr > 0)
+            stream_pb[pb_model_mask] = bvps_arr[pb_model_mask] * float(target_pb)
 
-        # EV/EBITDA series (requires EBITDA; backcast EBITDA with g)
-        stream_ev_ebitda = np.full(n_days, np.nan, dtype=float)
-        target_ev_ebitda = None
-        if EBITDA is not None and np.isfinite(EBITDA) and EBITDA > 0:
-            try:
-                ebitda_series = backcast_series(float(EBITDA), float(g), years_ago_array)
-                ev_hist = (np.array(prices_list, dtype=float) * float(shares_f)) + float(net_debt)
-                ev_eb_hist = ev_hist / np.where(ebitda_series == 0, np.nan, ebitda_series)
-                ev_eb_hist = ev_eb_hist[np.isfinite(ev_eb_hist) & (ev_eb_hist > 0)]
-                if len(ev_eb_hist) >= 60:
-                    target_ev_ebitda = float(np.nanmedian(ev_eb_hist))
-                if target_ev_ebitda is not None and np.isfinite(target_ev_ebitda) and target_ev_ebitda > 0:
-                    ev_model = ebitda_series * target_ev_ebitda
-                    eq_model = ev_model - float(net_debt)
-                    stream_ev_ebitda = eq_model / float(shares_f)
-                    current_models["ev_ebitda"] = float(stream_ev_ebitda[-1]) if np.isfinite(stream_ev_ebitda[-1]) else None
-            except Exception:
-                pass
+        # EV/EBITDA model:
+        # EV_target = EBITDA * target_ev_ebitda
+        # Equity = EV_target - net_debt ; per share = equity / shares
+        if target_ev_ebitda is not None:
+            ev_model_mask = np.isfinite(ebitda_arr) & (ebitda_arr > 0) & np.isfinite(net_debt_arr) & np.isfinite(shares_arr) & (shares_arr > 0)
+            ev_target = ebitda_arr * float(target_ev_ebitda)
+            eq_target = ev_target - net_debt_arr
+            stream_ev_ebitda[ev_model_mask] = eq_target[ev_model_mask] / shares_arr[ev_model_mask]
 
-        # ---------- Solver matrix ----------
-        actual = np.array(prices_list, dtype=float)
-        model_matrix = np.vstack([stream_dcf, stream_pe, stream_pb, stream_ev_ebitda])
-        available_mask = np.array([
-            np.any(np.isfinite(stream_dcf)),
-            np.any(np.isfinite(stream_pe)),
-            np.any(np.isfinite(stream_pb)),
-            np.any(np.isfinite(stream_ev_ebitda)),
+        # --- Data-quality gating: model availability on TRAIN sample points ---
+        X = np.vstack([stream_dcf, stream_pe, stream_pb, stream_ev_ebitda])  # (4, n_days)
+
+        # Availability based on having enough finite points in TRAIN sample
+        avail = np.array([
+            np.isfinite(stream_dcf[train_sample]).sum() >= 40,
+            np.isfinite(stream_pe[train_sample]).sum() >= 40,
+            np.isfinite(stream_pb[train_sample]).sum() >= 40,
+            np.isfinite(stream_ev_ebitda[train_sample]).sum() >= 40,
         ], dtype=bool)
 
-        # ---------- Solve weights ----------
+        if not np.any(avail):
+            return JSONResponse({"error": "No valuation models available after time-aligned fundamentals + gating (insufficient statements coverage)."}, status_code=200)
+
+        # --- Optimize weights on TRAIN sample (walk-forward) ---
+        y_train = price_arr[train_sample]
+        X_train = X[:, train_sample]
+
         try:
-            opt = solver_best_weights(
-                actual_prices=actual,
-                model_matrix=model_matrix,
-                available_mask=available_mask,
-                sample_step=SOLVER_SAMPLE_STEP,
-                grid_step=0.1,
-            )
-            weights_full = opt["weights"]
+            w = optimize_weights_dirichlet(y=y_train, X=X_train, avail=avail, n_samples=N_WEIGHT_SAMPLES)
         except Exception as e:
-            if not np.any(available_mask):
-                return JSONResponse({"error": f"No valuation models available for this ticker (statements missing). Detail: {str(e)}"}, status_code=200)
-            w = available_mask.astype(float)
-            w = w / np.sum(w)
-            opt = {"mape": None, "weights": w}
-            weights_full = w
+            # fallback: equal weights across available
+            w = avail.astype(float)
+            w = w / w.sum()
+            method_flags["weights"] = f"fallback_equal_due_to_{type(e).__name__}"
+        else:
+            method_flags["weights"] = "dirichlet_search"
 
-        # ---------- Combined model series and calibration ----------
-        combined = np.nansum(model_matrix.T * weights_full, axis=1)
-        k = calibration_k(actual, combined)
-        fair_values_full = (combined * k).tolist()
+        # --- Build combined series ---
+        combined = np.nansum(X.T * w, axis=1)  # length n_days
 
-        current_model_values = {
-            "dcf": (float(stream_dcf[-1]) * k) if np.isfinite(stream_dcf[-1]) else None,
-            "pe": (float(stream_pe[-1]) * k) if np.isfinite(stream_pe[-1]) else None,
-            "pb": (float(stream_pb[-1]) * k) if np.isfinite(stream_pb[-1]) else None,
-            "ev_ebitda": (float(stream_ev_ebitda[-1]) * k) if np.isfinite(stream_ev_ebitda[-1]) else None,
-        }
+        # Optional local calibration (TRAIN-only) to correct level without leaking TEST
+        # If you want “no scaling at all”, set k_train = 1.0.
+        def safe_calibration(yw: np.ndarray, mw: np.ndarray) -> float:
+            mask = np.isfinite(yw) & np.isfinite(mw) & (mw > 0) & (yw > 0)
+            if mask.sum() < 50:
+                return 1.0
+            k = float(np.sum(yw[mask]) / np.sum(mw[mask]))
+            if not np.isfinite(k) or k <= 0:
+                return 1.0
+            return k
 
-        combined_now = float(combined[-1]) if np.isfinite(combined[-1]) else None
-        fair_value = (combined_now * k) if combined_now is not None else None
-        if fair_value is None or not np.isfinite(fair_value) or fair_value <= 0:
+        k_train = safe_calibration(price_arr[train_idx], combined[train_idx])
+        fair_series = combined * k_train
+
+        # Current fair value
+        fair_value = float(fair_series[-1]) if np.isfinite(fair_series[-1]) else None
+        if fair_value is None or (not np.isfinite(fair_value)) or fair_value <= 0:
             return JSONResponse({"error": "Could not compute a finite fair value (models produced non-finite output)."}, status_code=200)
 
-        upside = ((float(fair_value) - float(current_price)) / float(current_price)) * 100.0
+        upside = ((fair_value - current_price) / current_price) * 100.0
 
         verdict = "Fairly Valued"
         if upside > 10:
@@ -1464,23 +1383,26 @@ def analyze_stock(request: StockRequest):
         elif upside < -10:
             verdict = "Overvalued"
 
-        # DCF projections
+        # DCF projections (FCFF forecast, using latest valid FCFF)
         dcf_projections = []
-        if fcff0 is not None and np.isfinite(fcff0) and fcff0 > 0:
+        fcff_latest = None
+        try:
+            fcff_latest = float(pd.Series(fcff_arr).dropna().iloc[-1])
+        except Exception:
+            fcff_latest = None
+
+        if fcff_latest is not None and np.isfinite(fcff_latest) and fcff_latest > 0:
             for i in range(1, FORECAST_YEARS + 1):
-                dcf_projections.append(float(fcff0 * ((1.0 + g) ** i)))
+                dcf_projections.append(float(fcff_latest * ((1.0 + g) ** i)))
 
         # Returns
-        def price_ago(days: int) -> float | None:
+        def ret_pct(days: int) -> Optional[float]:
             if n_days <= days:
                 return None
-            return float(prices_list[-days])
-
-        def ret_pct(days: int) -> float | None:
-            p = price_ago(days)
-            if p is None or p == 0:
+            p = float(price_arr[-days])
+            if not np.isfinite(p) or p == 0:
                 return None
-            return ((float(current_price) - p) / p) * 100.0
+            return ((current_price - p) / p) * 100.0
 
         returns = {
             "1m": ret_pct(21),
@@ -1490,24 +1412,48 @@ def analyze_stock(request: StockRequest):
             "2y": ret_pct(504),
         }
 
+        # Walk-forward backtest points (in TEST window only)
+        # We report a few points inside the test window to represent actual out-of-sample behavior.
         backtest_points = []
-        for label, days in [("1 Year Ago", 252), ("2 Years Ago", 504), ("3 Years Ago", 756), ("4 Years Ago", 1008), ("5 Years Ago", 1250)]:
-            if n_days > days:
-                idx = -days
-                backtest_points.append({
-                    "period": label,
-                    "actual": float(prices_list[idx]),
-                    "model": float(fair_values_full[idx]) if fair_values_full[idx] is not None else None,
-                })
+        def add_bt(label: str, idx_from_end: int):
+            if idx_from_end <= 0 or idx_from_end >= n_days:
+                return
+            i = n_days - idx_from_end
+            if i < test_start:
+                return
+            a = float(price_arr[i]) if np.isfinite(price_arr[i]) else None
+            m_ = float(fair_series[i]) if np.isfinite(fair_series[i]) else None
+            if a is None or m_ is None:
+                return
+            backtest_points.append({"period": label, "actual": a, "model": m_})
 
-        current_models.update({
-            "dcf": current_model_values["dcf"],
-            "pe": current_model_values["pe"],
-            "pb": current_model_values["pb"],
-            "ev_ebitda": current_model_values["ev_ebitda"],
-        })
+        add_bt("3 Months Ago (OOS)", 63)
+        add_bt("6 Months Ago (OOS)", 126)
+        add_bt("1 Year Ago (OOS)", 252)
 
-        source_used = f"{source_stock} (stock prices), {source_mkt} (market prices), Yahoo (statements), Excel (risk-free)"
+        # If test window is short (adaptive), add earliest test day
+        if test_start < n_days and test_start >= 0:
+            a0 = float(price_arr[test_start]) if np.isfinite(price_arr[test_start]) else None
+            m0 = float(fair_series[test_start]) if np.isfinite(fair_series[test_start]) else None
+            if a0 is not None and m0 is not None:
+                backtest_points.append({"period": "Test Start (OOS)", "actual": a0, "model": m0})
+
+        # Current model values (calibrated)
+        current_model_values = {
+            "dcf": (float(stream_dcf[-1]) * k_train) if np.isfinite(stream_dcf[-1]) else None,
+            "pe": (float(stream_pe[-1]) * k_train) if np.isfinite(stream_pe[-1]) else None,
+            "pb": (float(stream_pb[-1]) * k_train) if np.isfinite(stream_pb[-1]) else None,
+            "ev_ebitda": (float(stream_ev_ebitda[-1]) * k_train) if np.isfinite(stream_ev_ebitda[-1]) else None,
+        }
+
+        # Current observed multiples (TTM-based where possible)
+        eps_now = float(eps_ttm_daily.dropna().iloc[-1]) if eps_ttm_daily.dropna().size else None
+        book_now = float(bvps_daily.dropna().iloc[-1]) if bvps_daily.dropna().size else None
+        pe_ratio_now = (current_price / eps_now) if (eps_now is not None and np.isfinite(eps_now) and eps_now > 0) else None
+        pb_ratio_now = (current_price / book_now) if (book_now is not None and np.isfinite(book_now) and book_now > 0) else None
+
+        # Source string
+        source_used = f"{source_stock} (stock prices), {source_mkt} (market prices), Yahoo/yfinance (quarterly/annual statements), Excel (risk-free)"
 
         result = {
             "valuation_summary": {
@@ -1519,57 +1465,53 @@ def analyze_stock(request: StockRequest):
                 "dcf_projections": dcf_projections,
                 "sector": sector,
                 "model_breakdown": {
-                    "dcf": current_models["dcf"],
-                    "pe_model": current_models["pe"],
-                    "pb_model": current_models["pb"],
-                    "ev_ebitda_model": current_models["ev_ebitda"],
-                    "calibration_k": float(k) if np.isfinite(k) else None,
-                    "backtest_mape_percent": None if opt.get("mape") is None else float(opt["mape"]),
+                    "dcf": current_model_values["dcf"],
+                    "pe_model": current_model_values["pe"],
+                    "pb_model": current_model_values["pb"],
+                    "ev_ebitda_model": current_model_values["ev_ebitda"],
+                    "calibration_k_train": float(k_train) if np.isfinite(k_train) else None,
+                    "train_window_days": int(len(train_idx)),
+                    "test_window_days": int(len(test_idx)),
                 }
             },
             "optimized_weights": {
-                "dcf": float(weights_full[0]),
-                "pe": float(weights_full[1]),
-                "pb": float(weights_full[2]),
-                "ev_ebitda": float(weights_full[3]),
+                "dcf": float(w[0]),
+                "pe": float(w[1]),
+                "pb": float(w[2]),
+                "ev_ebitda": float(w[3]),
             },
             "metrics": {
-                "market_cap": float(mcap),
+                "market_cap": float(mcap_now),
                 "pe_ratio": pe_ratio_now,
                 "eps": eps_now,
                 "book_value": book_now,
                 "growth_rate": float(g) if np.isfinite(g) else None,
                 "wacc": float(WACC) if np.isfinite(WACC) else None,
                 "beta": float(beta) if np.isfinite(beta) else None,
-                "high52": float(max(prices_list[-252:])) if len(prices_list) >= 252 else float(max(prices_list)),
-                "low52": float(min(prices_list[-252:])) if len(prices_list) >= 252 else float(min(prices_list)),
+                "high52": float(np.nanmax(price_arr[-252:])) if len(price_arr) >= 252 else float(np.nanmax(price_arr)),
+                "low52": float(np.nanmin(price_arr[-252:])) if len(price_arr) >= 252 else float(np.nanmin(price_arr)),
                 "rf": float(rf) if np.isfinite(rf) else None,
                 "market_return": float(rm_exp) if np.isfinite(rm_exp) else None,
                 "erp": float(erp) if np.isfinite(erp) else None,
                 "cost_of_equity": float(Re) if np.isfinite(Re) else None,
                 "cost_of_debt": None if Rd is None else float(Rd),
                 "tax_rate": float(T) if np.isfinite(T) else None,
-                "debt": float(D) if np.isfinite(D) else None,
-                "cash": float(cash) if np.isfinite(cash) else None,
-                "net_debt": float(net_debt) if np.isfinite(net_debt) else None,
+                "debt_now_report": float(debt_daily.dropna().iloc[-1]) if debt_daily.dropna().size else None,
+                "cash_now_report": float(last_value_on_or_before(cash_q, dates).dropna().iloc[-1]) if (cash_q is not None and not cash_q.empty) else None,
+                "net_debt_now_report": float(net_debt_daily.dropna().iloc[-1]) if net_debt_daily.dropna().size else None,
                 "method_flags": method_flags,
-                "multiples_inputs_source": mult_sources,
                 "multiples_targets": {
-                    "target_pe_median": target_pe,
-                    "target_pb_median": target_pb,
-                    "target_ev_ebitda_median": target_ev_ebitda,
+                    "target_pe_median_train": target_pe,
+                    "target_pb_median_train": target_pb,
+                    "target_ev_ebitda_median_train": target_ev_ebitda,
                 },
-                "multiples_now": {
-                    "pb_ratio_now": pb_ratio_now,
-                    "ev_ebitda_now": ev_ebitda_now,
-                }
             },
             "returns": returns,
             "backtest": backtest_points,
             "historical_data": {
                 "dates": dates_ms,
-                "prices": [float(x) for x in prices_list],
-                "fair_values": fair_values_full,
+                "prices": [float(x) for x in price_arr],
+                "fair_values": [float(x) if np.isfinite(x) else None for x in fair_series],
             },
             "source_used": source_used,
             "is_dynamic_beta": True,
@@ -1583,7 +1525,6 @@ def analyze_stock(request: StockRequest):
     except Exception as e:
         return JSONResponse({"error": f"{type(e).__name__}: {str(e)}"}, status_code=200)
 
-
 # =========================================================
 # 10) RUN
 # =========================================================
@@ -1591,3 +1532,5 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+```
+
