@@ -13,6 +13,33 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 
+import math
+import numpy as np
+
+def json_safe(obj):
+    """
+    Recursively convert NaN/Inf to None so FastAPI can JSON serialize.
+    """
+    if obj is None:
+        return None
+
+    # numpy scalars
+    if isinstance(obj, (np.floating, np.integer)):
+        obj = obj.item()
+
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+
+    if isinstance(obj, dict):
+        return {k: json_safe(v) for k, v in obj.items()}
+
+    if isinstance(obj, (list, tuple)):
+        return [json_safe(v) for v in obj]
+
+    return obj
+
 # Optional BS4 (not required)
 try:
     from bs4 import BeautifulSoup  # noqa: F401
